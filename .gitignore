@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Raw dataset: download it from figshare (see README). Only the one example
+# recording in examples/ is published with the app.
+data/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

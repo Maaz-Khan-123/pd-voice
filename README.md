@@ -1,0 +1,301 @@
+# Sustained-vowel voice analysis for Parkinson's disease: a research prototype
+
+> ⚠️ **RESEARCH PROTOTYPE, NOT A DIAGNOSIS.** This is a high-school research project.
+> It has not been clinically validated, cannot tell anyone whether they have Parkinson's
+> disease, and must not be used to make any health decision.
+
+## In one paragraph
+
+We extracted 18 acoustic features (pitch, jitter, shimmer, harmonics-to-noise ratio and
+13 MFCC means) from 81 telephone recordings of a sustained "ahhh" (41 healthy controls,
+40 people with Parkinson's), trained two simple classifiers, and evaluated them with
+speaker-grouped cross-validation. **The voice model reached about 60% accuracy (chance ≈ 51%),
+which a permutation test shows is not significantly better than chance (p ≈ 0.2).**
+Three sanity checks point the same way:
+**a model that ignores the voice and uses only recording properties (duration, loudness,
+noise floor, silence) did better (≈ 69%, p = 0.002)**, **age alone did much better (≈ 82%)**, and
+**mild noise or compression moved the scores of both groups together**, until at heavy
+degradation the model called nearly everyone "Parkinson's" (noise) or "healthy"
+(8 kbps MP3, 4 kHz). The honest conclusion is that **this dataset is too small and too
+confounded to show that these features detect Parkinson's**. The project is better read
+as a demonstration of *how to check* a voice-biomarker claim than as a detector.
+
+---
+
+## 1. Data
+
+Source: figshare dataset of sustained /a/ recordings made by participants on their own
+telephones (see [Citations](#citations)). Files: `data/figshare/HC_AH/HC_AH/*.wav`,
+`data/figshare/PD_AH/PD_AH/*.wav`, `data/figshare/Demographics_age_sex.xlsx`
+(sheet `Parselmouth`: `Sample ID`, `Label`, `Age`, `Sex`).
+
+What the data inspection (step 0) found:
+
+| | Healthy controls | Parkinson's |
+|---|---|---|
+| Recordings | 41 | 40 |
+| Age, mean ± SD (range) | 47.7 ± 14.3 (18-79) | 67.0 ± 9.0 (43-85) |
+| Under 40 / over 60 | 12 / 7 | 0 / 31 |
+| Female / male | 25 / 16 | 19 / 21 |
+| Duration, median (range) | 2.9 s (1.6-5.8) | 3.3 s (1.5-7.2) |
+
+* `Sample ID` = WAV file name without `.wav`; every file has exactly one row and vice versa.
+* One recording per ID, no duplicate files. There is no separate speaker column, so
+  repeat speakers under different IDs can't be ruled out completely (a similarity check
+  found no obvious duplicates).
+* **All audio is 8 kHz mono** (telephone bandwidth, 0-4 kHz) and **every file is
+  peak-normalised to exactly 1.0**. Leading silence was already trimmed from every file.
+* **Age is strongly confounded** with diagnosis (p ≈ 2 × 10⁻⁸, Mann-Whitney).
+* **Signs that the two groups were collected differently:** the two groups use
+  different Sample ID formats (`AH_064F_<UUID>` vs `AH_5456…-<UUID>`), and ages are
+  whole numbers for controls but decimals for Parkinson's. Any difference between
+  the groups in how they were recorded could be learned instead of the disease.
+
+## 2. Methods
+
+All code is in this folder; every script is commented.
+
+| File | Purpose |
+|---|---|
+| `features.py` | **The single feature-extraction function** used for training, degraded audio and live recordings. Also the recording-only sanity features. |
+| `audio_tools.py` | ffmpeg conversion and the degradations (noise, MP3, 4 kHz). Shared by step 3 and the app. |
+| `common.py` | Model definitions, grouped CV splitter, chart style. |
+| `step1_extract_features.py` | Builds `results/features.csv`. |
+| `step2_train_evaluate.py` | Cross-validation, sanity checks, permutation test, final models. |
+| `step3_robustness.py` | Degradation test. |
+| `app.py` | Streamlit app. |
+
+### 2.1 Feature extraction (`features.py`)
+For every recording: mix to mono → resample to 8 kHz (so a 48 kHz laptop recording
+matches the telephone training data) → peak-normalise → trim to the span between the
+first and last voiced frame → measure with Praat via Parselmouth:
+
+* **Pitch (F0)** mean and SD over voiced frames (autocorrelation, 75-500 Hz).
+* **Jitter (local)** and **shimmer (local)** from a cross-correlation PointProcess,
+  Praat default parameters (period 0.1-20 ms, max period factor 1.3, max amplitude factor 1.6).
+* **HNR** (cross-correlation harmonicity, mean over defined frames).
+* **13 MFCC means** (c0-c12; Praat MFCC, 15 ms windows, 5 ms steps, mel filters up to 4 kHz).
+
+**Recording-only sanity features** (computed on the raw file, never given to the voice
+model): clip duration, overall RMS loudness (dBFS), noise floor (5th percentile of 25 ms
+frame energy), leading and trailing silence (frames > 30 dB below the loudest frame).
+
+### 2.2 Models and evaluation (`step2_train_evaluate.py`)
+* **Logistic regression** (standardised features, C = 1, balanced class weights) and
+  **random forest** (300 trees, min. 2 samples per leaf, balanced). Settings were fixed
+  in advance; nothing was tuned on this data.
+* **Stratified grouped 5-fold cross-validation, grouped by speaker**, repeated 20 times
+  with different shuffles = **100 test folds**. A speaker is never in both training and
+  test data. Feature scaling is fitted inside each training fold.
+* Metrics: accuracy, **sensitivity** (Parkinson's correctly flagged), **specificity**
+  (controls correctly cleared), AUC, with the spread across folds.
+* Sanity checks with the identical procedure: recording-only features, age only, sex
+  only, age + sex. The whole analysis was repeated on the **ages 40-80** subset.
+* **Permutation test:** retrain on speaker-level shuffled labels (1000 shuffles for
+  logistic regression, 100 for random forest) to see how often chance matches the real score.
+
+### 2.3 Robustness test (`step3_robustness.py`)
+Models are trained on clean features from the training speakers. The **held-out**
+speakers' audio is degraded and passed through the same `extract_features()`:
+white noise at 30, 20, 10, 5, 0 dB SNR; MP3 (ffmpeg/LAME) at 32, 16, 8 kbps; and
+resampling to 4 kHz (removes everything above 2 kHz). The original plan's "8 kHz
+resample" was dropped because the data are already 8 kHz. 5 × 5-fold grouped CV.
+
+## 3. Results
+
+### 3.1 Cross-validated accuracy (100 test folds; mean, SD across folds)
+
+![Step 2 accuracy](results/step2_accuracy.png)
+
+**All participants (41 HC, 40 PD).** Chance = 50.6%.
+
+| Features | Model | Accuracy (SD) | 5th-95th pct of folds | Sensitivity | Specificity | AUC |
+|---|---|---|---|---|---|---|
+| Voice (18) | Logistic regression | 0.606 (0.103) | 0.44-0.76 | 0.594 | 0.617 | 0.630 |
+| Voice (18) | Random forest | 0.578 (0.120) | 0.38-0.75 | 0.595 | 0.562 | 0.605 |
+| **Recording only (sanity)** | Logistic regression | **0.692** (0.094) | 0.50-0.88 | 0.593 | 0.789 | 0.757 |
+| Recording only (sanity) | Random forest | 0.657 (0.103) | 0.50-0.81 | 0.559 | 0.752 | 0.691 |
+| **Age only** | Logistic regression | **0.824** (0.086) | 0.69-0.94 | 0.821 | 0.827 | 0.854 |
+| Age only | Random forest | 0.787 (0.080) | 0.69-0.94 | 0.834 | 0.741 | 0.828 |
+| Sex only | Logistic regression | 0.565 (0.111) | 0.41-0.75 | 0.525 | 0.604 | 0.509 |
+| Age + sex | Logistic regression | 0.817 (0.089) | 0.68-0.94 | 0.815 | 0.819 | 0.844 |
+
+**Ages 40-80 only (32 HC, 37 PD; median age 51 vs 68, so still confounded).**
+
+| Features | Model | Accuracy (SD) | AUC |
+|---|---|---|---|
+| Voice (18) | Logistic regression | 0.597 (0.133) | 0.638 |
+| Voice (18) | Random forest | 0.615 (0.117) | 0.658 |
+| Recording only (sanity) | Logistic regression | 0.650 (0.128) | 0.739 |
+| Age only | Logistic regression | 0.777 (0.089) | 0.801 |
+
+Full table: `results/step2_cv_results.csv`.
+
+**Permutation test** (one fixed 5-fold split; p = fraction of shuffled-label runs that
+matched or beat the real accuracy):
+
+| Features | Model | Real accuracy | Mean accuracy with shuffled labels | p | Shuffles |
+|---|---|---|---|---|---|
+| Voice (18) | Logistic regression | 0.568 | 0.501 | **0.19** | 1000 |
+| Voice (18) | Random forest | 0.568 | 0.506 | **0.23** | 100 |
+| Recording only (sanity) | Logistic regression | 0.716 | 0.502 | **0.002** | 1000 |
+| Recording only (sanity) | Random forest | 0.630 | 0.511 | 0.07 | 100 |
+
+**The voice models are not statistically distinguishable from chance** (about 1 in 5
+label-shuffled runs did as well). **The recording-only model is** (p = 0.002). In this
+dataset, how a clip was recorded is a stronger signal than the voice features.
+
+**What the voice model relies on** (held-out permutation importance,
+`results/step2_feature_importance.csv`): mean pitch dominates the logistic regression,
+followed by MFCC c0 (overall energy) and a few high MFCCs. Jitter, shimmer and HNR, the
+classic dysphonia measures, contributed almost nothing, and none of them differed
+between groups (all p > 0.7). Mean pitch was *higher* in the Parkinson's group even
+though it has more men (PD men median 158 Hz vs control men 115 Hz). That could be
+a real effect, a pitch-tracking error, or a recording difference; this dataset can't tell
+which.
+
+### 3.2 Robustness to degraded audio
+
+![Step 3 robustness](results/step3_robustness.png)
+
+Logistic regression (full table incl. random forest: `results/step3_robustness.csv`):
+
+| Condition | Accuracy | Sensitivity | Specificity | Mean score HC | Mean score PD | % of recordings whose label flipped |
+|---|---|---|---|---|---|---|
+| Clean | 0.603 | 0.600 | 0.605 | 0.46 | 0.56 | 0 |
+| Noise 30 dB | 0.588 | 0.665 | 0.512 | 0.51 | 0.62 | 8 |
+| Noise 20 dB | 0.566 | 0.870 | 0.269 | 0.65 | 0.76 | 30 |
+| Noise 10 dB | 0.506 | 0.965 | 0.058 | 0.82 | 0.89 | 46 |
+| Noise 5 dB | 0.499 | 0.980 | 0.030 | 0.86 | 0.90 | 49 |
+| Noise 0 dB | 0.464 | 0.875 | 0.064 | 0.82 | 0.82 | 51 |
+| MP3 32 kbps | 0.600 | 0.595 | 0.605 | 0.46 | 0.56 | 1 |
+| MP3 16 kbps | 0.581 | 0.620 | 0.542 | 0.49 | 0.56 | 5 |
+| MP3 8 kbps | 0.496 | 0.045 | 0.935 | 0.09 | 0.08 | 45 |
+| 4 kHz resample | 0.533 | 0.245 | 0.810 | 0.19 | 0.23 | 42 |
+
+* **Noise makes everyone look "Parkinson's".** Added noise lowers HNR and raises jitter
+  and shimmer, which look like the hoarse voice the model associates with Parkinson's.
+  At 10 dB SNR (a noisy room) 94% of *healthy* speakers were flagged.
+* **Heavy compression and narrow bandwidth make everyone look "healthy",** because they
+  shift the MFCCs (by 2-11 training SDs, `results/step3_feature_drift.csv`) far outside
+  anything seen in training.
+* Moderate MP3 (32-16 kbps) and quiet noise (30 dB) barely matter.
+* The random forest is less extreme (its scores move less) but its accuracy also falls to chance.
+
+### 3.3 App (`app.py`)
+
+`.venv/bin/streamlit run app.py` (dark theme and fonts in `.streamlit/config.toml`).
+
+* **Header** with a permanent "Research prototype, not a diagnosis" banner, plus a ribbon
+  pinned to the bottom of the window.
+* **Record / Upload:** microphone or file (any format ffmpeg reads) → WAV → interactive
+  Plotly waveform, pitch trace and spectrogram of the 8 kHz audio the model actually analyses.
+  A "Try an example recording" button loads one training-set file for demos without a
+  microphone (labelled as optimistic, since the model has heard that speaker).
+* **Your Voice vs. the Dataset:** a **score range** (5th-95th percentile over 100
+  bootstrap models), placed on the same axis as all 81 dataset speakers scored *held out*,
+  with a plain-language explanation that never gives a verdict. Each voice feature is
+  shown as a diamond over the healthy and Parkinson's distributions, with MFCCs and a
+  full table in expanders.
+* **How Noise Changes the Result:** choose noise / MP3 / low bandwidth and a severity;
+  waveform, spectrogram, audio and score update with a side-by-side before/after,
+  a table of which measurements moved, and the score at every severity.
+* **How this works and what it can't tell you:** dataset size, cross-validated accuracy,
+  permutation p-value and the main limits, shown under every tab.
+* **Errors are handled with plain messages:** empty files, unsupported types, unreadable
+  files, silence, clips under 0.5 s, recordings with under 1 s of steady voice, and noise
+  without a pitch. Recordings over 30 s are trimmed; clipping and short voicing get warnings.
+* URL options for demos: `?example=1` pre-loads the example, `?tab=2` or `?tab=3` opens a tab.
+
+## 4. Limitations
+
+1. **Tiny dataset.** 81 speakers. Fold-to-fold accuracy ranges over ±10-13 points; a
+   single 80/20 split could report anything from ~40% to ~85%.
+2. **Age confound.** Controls are ~20 years younger; age alone beats every voice model.
+   Voices change with age, so any voice difference may be an age difference. The 40-80
+   subset is still unbalanced (median 51 vs 68). A proper study would age-match.
+3. **Recording-setup confound.** Each participant used their own phone. Recording-only
+   features beat the voice features, and the two groups' IDs and age formats differ,
+   suggesting separate collection pipelines. All files were peak-normalised and trimmed,
+   which hides some of this but not all.
+4. **One vocal task.** A sustained /a/ only. Parkinson's affects speech in many ways
+   (prosody, articulation, rate) that a vowel can't capture.
+5. **Telephone audio.** 8 kHz, 0-4 kHz bandwidth: much less detail than research-grade
+   recordings (often 44.1 kHz, head-mounted microphone, quiet booth).
+6. **Short recordings.** Median ~3 s, 18 under 2 s of voicing. Jitter and shimmer
+   are noisy on short samples. Ten speakers have pitch SD > 20 Hz, which for a steady vowel
+   probably means pitch-tracking (octave) errors.
+7. **No clinical information.** Disease stage, medication state and time since diagnosis
+   are unknown.
+8. **No external validation.** All numbers come from cross-validation within one
+   dataset. No independent test set, no clinical validation.
+9. **Live recordings differ from training.** Laptop/phone microphones, rooms and browser
+   processing (noise suppression, auto-gain) are all different, and step 3 shows the
+   model is sensitive to exactly these things.
+
+## 5. Reproducing
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+brew install ffmpeg
+.venv/bin/python step1_extract_features.py     # ~1 min
+.venv/bin/python step2_train_evaluate.py       # ~10 min (permutation tests)
+.venv/bin/python step3_robustness.py           # ~2 min first run
+.venv/bin/streamlit run app.py
+```
+Tested on macOS (Apple M2), Python 3.13, CPU only. Random seeds are fixed in `common.py`.
+
+## 6. Live app (Streamlit Community Cloud)
+
+The repository is ready to deploy as-is:
+
+* `requirements.txt`: Python packages (pinned).
+* `packages.txt`: system packages the host installs (`ffmpeg`, `libsndfile1`).
+* `.streamlit/config.toml`: theme.
+* `models/voice_models.joblib` and `results/features.csv`: the trained models and the
+  training features the app compares against (numbers only, no audio).
+* `examples/example_healthy_control.wav`: the single recording used by
+  "Try an example recording" (a copy of figshare file `AH_121A_…`).
+
+The raw figshare recordings (`data/`) are **not** in the repository. Download them
+from figshare into `data/figshare/` to re-run steps 1-3.
+
+Deploy: share.streamlit.io → *Create app* → pick this repo, branch `main`, main file
+`app.py` → *Advanced settings* → Python **3.13** → *Deploy*.
+
+Visitors' audio is processed in memory only (cached for at most an hour, never written
+to disk by the app or shared).
+
+## Citations
+
+* **Dataset / original study:** Iyer A, Kemp A, Rahmatallah Y, Pillai L, Glover A, Prior F,
+  Larson-Prior L, Virmani T. *A machine learning method to process voice samples for
+  identification of Parkinson's disease.* Scientific Reports 13, 20615 (2023).
+  Recordings and features published on figshare. *(Add the figshare DOI from the
+  download page.)*
+* **Praat:** Boersma P, Weenink D. *Praat: doing phonetics by computer* (version 6.1.38). https://www.praat.org
+* **Parselmouth:** Jadoul Y, Thompson B, de Boer B. *Introducing Parselmouth: A Python
+  interface to Praat.* Journal of Phonetics 71, 1-15 (2018).
+* **scikit-learn:** Pedregosa F et al. *Scikit-learn: Machine learning in Python.* JMLR 12, 2825-2830 (2011).
+* **FFmpeg** (https://ffmpeg.org) and **LAME** MP3 encoder (https://lame.sourceforge.io).
+* Little MA, McSharry PE, Hunter EJ, Spielman J, Ramig LO. *Suitability of dysphonia
+  measurements for telemonitoring of Parkinson's disease.* IEEE Trans Biomed Eng 56(4),
+  1015-1022 (2009).
+* Tsanas A, Little MA, McSharry PE, Ramig LO. *Novel speech signal processing algorithms
+  for high-accuracy classification of Parkinson's disease.* IEEE Trans Biomed Eng 59(5),
+  1264-1271 (2012).
+* Rusz J, Cmejla R, Ruzickova H, Ruzicka E. *Quantitative acoustic measurements for
+  characterization of speech and voice disorders in early untreated Parkinson's disease.*
+  J Acoust Soc Am 129(1), 350-367 (2011).
+* Chaibub Neto E et al. *Detecting the impact of subject characteristics on machine
+  learning-based diagnostic applications.* npj Digital Medicine 2, 99 (2019). (Why
+  speaker-grouped validation matters.)
+* Saeb S, Lonini L, Jayaraman A, Mohr DC, Kording KP. *The need to approximate the
+  use-case in clinical machine learning.* GigaScience 6(5) (2017).
+* Ojala M, Garriga GC. *Permutation tests for studying classifier performance.* JMLR 11,
+  1833-1863 (2010).
+
+*Citations were written from memory. Check each one against the original before submitting.*
+
+---
+⚠️ **Research prototype, not a diagnosis.**

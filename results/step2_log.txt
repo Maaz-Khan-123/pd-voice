@@ -1,0 +1,42 @@
+Chance level (always guess the larger class): 0.506
+
+=== All participants: 41 HC, 40 PD, median age HC 45 / PD 68 ===
+Voice (18 features)             logreg acc 0.606 (SD 0.103, 5-95% 0.44-0.76)  sens 0.594  spec 0.617  AUC 0.630
+Voice (18 features)             rf     acc 0.578 (SD 0.120, 5-95% 0.38-0.75)  sens 0.595  spec 0.562  AUC 0.605
+Recording only (sanity check)   logreg acc 0.692 (SD 0.094, 5-95% 0.50-0.88)  sens 0.593  spec 0.789  AUC 0.757
+Recording only (sanity check)   rf     acc 0.657 (SD 0.103, 5-95% 0.50-0.81)  sens 0.559  spec 0.752  AUC 0.691
+Age only                        logreg acc 0.824 (SD 0.086, 5-95% 0.69-0.94)  sens 0.821  spec 0.827  AUC 0.854
+Age only                        rf     acc 0.787 (SD 0.080, 5-95% 0.69-0.94)  sens 0.834  spec 0.741  AUC 0.828
+Sex only                        logreg acc 0.565 (SD 0.111, 5-95% 0.41-0.75)  sens 0.525  spec 0.604  AUC 0.509
+Sex only                        rf     acc 0.562 (SD 0.108, 5-95% 0.41-0.75)  sens 0.507  spec 0.615  AUC 0.508
+Age + sex                       logreg acc 0.817 (SD 0.089, 5-95% 0.68-0.94)  sens 0.815  spec 0.819  AUC 0.844
+Age + sex                       rf     acc 0.814 (SD 0.085, 5-95% 0.69-0.94)  sens 0.825  spec 0.802  AUC 0.833
+
+=== Ages 40-80 only: 32 HC, 37 PD, median age HC 51 / PD 68 ===
+Voice (18 features)             logreg acc 0.597 (SD 0.133, 5-95% 0.38-0.85)  sens 0.567  spec 0.633  AUC 0.638
+Voice (18 features)             rf     acc 0.615 (SD 0.117, 5-95% 0.43-0.79)  sens 0.627  spec 0.601  AUC 0.658
+Recording only (sanity check)   logreg acc 0.650 (SD 0.128, 5-95% 0.46-0.86)  sens 0.557  spec 0.759  AUC 0.739
+Recording only (sanity check)   rf     acc 0.641 (SD 0.109, 5-95% 0.43-0.79)  sens 0.575  spec 0.717  AUC 0.689
+Age only                        logreg acc 0.777 (SD 0.089, 5-95% 0.64-0.93)  sens 0.772  spec 0.781  AUC 0.801
+Age only                        rf     acc 0.730 (SD 0.093, 5-95% 0.57-0.86)  sens 0.774  spec 0.675  AUC 0.793
+Sex only                        logreg acc 0.478 (SD 0.134, 5-95% 0.23-0.64)  sens 0.476  spec 0.478  AUC 0.454
+Sex only                        rf     acc 0.479 (SD 0.128, 5-95% 0.23-0.64)  sens 0.429  spec 0.534  AUC 0.452
+Age + sex                       logreg acc 0.772 (SD 0.089, 5-95% 0.64-0.92)  sens 0.764  spec 0.779  AUC 0.790
+Age + sex                       rf     acc 0.788 (SD 0.099, 5-95% 0.60-0.93)  sens 0.826  spec 0.742  AUC 0.790
+
+=== Permutation tests (all participants, one 5-fold split) ===
+Voice (18 features)             logreg accuracy 0.568  shuffled-label mean 0.501  p = 0.191  (1000 shuffles)
+Voice (18 features)             rf     accuracy 0.568  shuffled-label mean 0.506  p = 0.228  (100 shuffles)
+Recording only (sanity check)   logreg accuracy 0.716  shuffled-label mean 0.502  p = 0.002  (1000 shuffles)
+Recording only (sanity check)   rf     accuracy 0.630  shuffled-label mean 0.511  p = 0.069  (100 shuffles)
+
+Top held-out permutation importances (accuracy drop):
+      feature  logreg     rf  spearman_with_age
+   f0_mean_hz   0.096  0.015              0.012
+   mfcc0_mean   0.035 -0.000             -0.212
+   mfcc8_mean   0.020  0.035              0.157
+  mfcc11_mean   0.016  0.011              0.153
+  mfcc12_mean   0.008  0.023              0.138
+shimmer_local   0.007  0.034              0.111
+
+Saved final models to models/voice_models.joblib
