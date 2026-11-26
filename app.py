@@ -332,8 +332,12 @@ def style(fig: go.Figure, height: int, title: str | None = None) -> go.Figure:
     return fig
 
 
-def show(fig: go.Figure):
-    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "responsive": True})
+def show(fig: go.Figure, key: str):
+    """Render a Plotly chart. `key` is required: without it Streamlit derives an ID
+    from the figure's contents, and two identical figures (e.g. original vs
+    "degraded" at severity None) crash with StreamlitDuplicateElementId."""
+    st.plotly_chart(fig, key=key, width="stretch",
+                    config={"displayModeBar": False, "responsive": True})
 
 
 def _envelope(t, x, n=1200):
@@ -683,18 +687,18 @@ def tab_dataset(base: dict, model_name: str):
                        "the Parkinson's group of this small dataset. It is **not** a probability "
                        "of having Parkinson's. The range is the 5th-95th percentile over 100 "
                        "models, each trained on a resampled copy of the data.")
-        show(fig_score(base["score"], oof))
+        show(fig_score(base["score"], oof), key="chart_score")
         st.caption("Dots: each of the 81 dataset speakers, scored by a model that never saw "
                    "them. The heavy overlap is why no single score can be trusted.")
 
     st.markdown("#### Your voice measurements vs. the dataset")
     st.caption("Violins and dots: the 41 healthy and 40 Parkinson's speakers. Aqua diamond: "
                "this recording. Hover for exact values.")
-    show(fig_voice_features(base["feats"], train))
+    show(fig_voice_features(base["feats"], train), key="chart_voice_features")
     with st.expander("Timbre: 13 MFCC means (spectral shape)"):
         st.caption("MFCCs summarise the shape of the sound spectrum. Shown as distance from the "
                    "dataset average, in standard deviations, so all 13 fit on one axis.")
-        show(fig_mfcc(base["feats"], train))
+        show(fig_mfcc(base["feats"], train), key="chart_mfcc")
     with st.expander("All 18 numbers as a table"):
         f = base["feats"]
         tbl = pd.DataFrame({
@@ -756,13 +760,13 @@ def tab_noise(wav: bytes, base: dict, model_name: str):
     with left:
         st.markdown("**Original**")
         st.audio(base["wav"], format="audio/wav")
-        show(fig_wave(base["traces"], TEXT_2, "Waveform"))
-        show(fig_spec(base["traces"], "Spectrogram"))
+        show(fig_wave(base["traces"], TEXT_2, "Waveform"), key="chart_wave_before")
+        show(fig_spec(base["traces"], "Spectrogram"), key="chart_spec_before")
     with right:
         st.markdown(f"**Degraded: {kind.lower()}, {level}**")
         st.audio(after["wav"], format="audio/wav")
-        show(fig_wave(after["traces"], ACCENT, "Waveform"))
-        show(fig_spec(after["traces"], "Spectrogram"))
+        show(fig_wave(after["traces"], ACCENT, "Waveform"), key="chart_wave_after")
+        show(fig_spec(after["traces"], "Spectrogram"), key="chart_spec_after")
 
     # --- which measurements moved -------------------------------------------
     rows = []
@@ -782,7 +786,7 @@ def tab_noise(wav: bytes, base: dict, model_name: str):
 
     with st.spinner("Scoring every severity level…"):
         curve = [analyse(wav, kind, lv, model_name)["score"] for lv in levels]
-    show(fig_curve(levels, curve, levels.index(level)))
+    show(fig_curve(levels, curve, levels.index(level)), key="chart_curve")
     st.caption("In our robustness test on held-out speakers, background noise pushed almost "
                "everyone (healthy or not) towards the Parkinson's side, and heavy compression "
                "pushed almost everyone towards the healthy side.")
@@ -878,7 +882,7 @@ def main():
                 st.warning(w, icon="⚠️")
             st.caption("What the model hears (mono, 8 kHz telephone quality, volume-normalised):")
             st.audio(base["wav"], format="audio/wav")
-            show(fig_signal(base["traces"]))
+            show(fig_signal(base["traces"]), key="chart_signal")
             st.info("Next: open **Your Voice vs. the Dataset** to see the score range and how "
                     "each measurement compares.", icon="👉")
 
