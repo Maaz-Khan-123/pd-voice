@@ -638,6 +638,7 @@ def tab_record():
     c1, c2 = st.columns(2, gap="large")
     v = st.session_state.get("input_version", 0)     # bumped by "Delete my audio"
     recorded = c1.audio_input("Record with your microphone", key=f"rec_{v}")
+    delete_slot = c1.empty()          # "Delete my audio" appears here once audio is loaded
     c1.caption("🔒 Your audio is analysed in memory and never saved to disk or shared. "
                "Browser noise suppression and auto-volume are switched off so a steady "
                "“ahhh” isn't faded out.")
@@ -656,6 +657,12 @@ def tab_record():
         ex2.caption("Using a recording **from the training dataset**. The model has already "
                     "heard this speaker, so its score is more optimistic than for a new voice. "
                     "Click again to clear.")
+
+    if uploaded or recorded or use_example:
+        delete_slot.button("🗑️ Delete my audio & start over", on_click=delete_my_audio,
+                           width="stretch", key="delete_audio",
+                           help="Done? Removes your recording and its analysis from this "
+                                "app's memory and resets the page so you can start over.")
 
     if uploaded and recorded:
         st.caption("Using the uploaded file. Remove it to analyse your recording instead.")
@@ -869,8 +876,7 @@ def main():
     st.set_page_config(page_title="Voice research prototype", page_icon="🔬", layout="wide")
     header()
 
-    _, reset_col, right = st.columns([3.6, 1.4, 1])
-    reset_slot = reset_col.empty()          # filled below once we know audio is loaded
+    _, right = st.columns([5, 1])
     with right.popover("⚙︎ Model", width="stretch"):
         model_name = st.radio("Classifier", ["logreg", "rf"], key="model",
                               format_func={"logreg": "Logistic regression (default)",
@@ -924,12 +930,6 @@ def main():
             show(fig_signal(base["traces"]), key="chart_signal")
             st.info("Next: open **Your Voice vs. the Dataset** to see the score range and how "
                     "each measurement compares.", icon="👉")
-
-    if source is not None:
-        reset_slot.button("🗑️ Delete my audio", on_click=delete_my_audio,
-                          width="stretch", key="delete_audio",
-                          help="Done? Removes your recording and its analysis from this "
-                               "app's memory and resets the page so you can start over.")
 
     # ---- Tabs 2 and 3 -------------------------------------------------------
     with t2:
