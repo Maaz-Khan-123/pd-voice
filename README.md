@@ -205,6 +205,9 @@ Logistic regression (full table incl. random forest: `results/step3_robustness.c
 * **Errors are handled with plain messages:** empty files, unsupported types, unreadable
   files, silence, clips under 0.5 s, recordings with under 1 s of steady voice, and noise
   without a pitch. Recordings over 30 s are trimmed; clipping and short voicing get warnings.
+* **Delete my audio:** once audio is loaded, a button next to "Model" removes the
+  visitor's recording and every cached analysis of it from the app's memory, resets the
+  recorder/uploader, and shows a confirmation. Other visitors' data is untouched.
 * URL options for demos: `?example=1` pre-loads the example, `?tab=2` or `?tab=3` opens a tab.
 
 ## 4. Limitations

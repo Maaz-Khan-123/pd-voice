@@ -636,11 +636,12 @@ def tab_record():
         col.markdown(f"<div class='rp-card'><h4>{h}</h4><p>{p}</p></div>", unsafe_allow_html=True)
     st.write("")
     c1, c2 = st.columns(2, gap="large")
-    recorded = c1.audio_input("Record with your microphone")
+    v = st.session_state.get("input_version", 0)     # bumped by "Delete my audio"
+    recorded = c1.audio_input("Record with your microphone", key=f"rec_{v}")
     c1.caption("🔒 Your audio is analysed in memory and never saved to disk or shared. "
                "Browser noise suppression and auto-volume are switched off so a steady "
                "“ahhh” isn't faded out.")
-    uploaded = c2.file_uploader("…or upload an audio file",
+    uploaded = c2.file_uploader("…or upload an audio file", key=f"up_{v}",
                                 help="WAV, MP3, M4A, OGG, WEBM, FLAC, AAC or OPUS, up to 25 MB")
 
     # Demo fallback: one recording from the dataset, for when there's no microphone.
@@ -833,21 +834,56 @@ def how_it_works(model_name: str):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+TAB_NAMES = ["🎙️  Record / Upload", "📊  Your Voice vs. the Dataset",
+             "🔊  How Noise Changes the Result"]
+
+
+def delete_my_audio():
+    """Button callback: forget this visitor's audio everywhere the app keeps it.
+
+    1. Remove this input's entries from the in-memory caches: the converted WAV
+       (prepare_audio) and every analysis of it (analyse) for every degradation
+       level and both models. Other visitors' entries are untouched.
+    2. Give the recorder and uploader new keys, so Streamlit discards the old
+       widgets and the browser's copy of the recording.
+    3. Reset the example toggle and degradation sliders, and show a confirmation.
+    """
+    active = st.session_state.pop("_active_input", None)
+    if active is not None:
+        raw, name, wav = active
+        prepare_audio.clear(raw, name)
+        if wav is not None:
+            for model in ("logreg", "rf"):
+                for kind, cfg in DEGRADATIONS.items():
+                    for level in cfg["levels"]:
+                        analyse.clear(wav, kind, level, model)
+    for k in [k for k in st.session_state if k.startswith("deg_")]:
+        del st.session_state[k]
+    st.session_state.use_example = False          # also overrides ?example=1
+    st.query_params.clear()
+    st.session_state.input_version = st.session_state.get("input_version", 0) + 1
+    st.session_state._deleted_flash = True
+
+
 def main():
     st.set_page_config(page_title="Voice research prototype", page_icon="🔬", layout="wide")
     header()
 
-    _, right = st.columns([5, 1])
+    _, reset_col, right = st.columns([3.6, 1.4, 1])
+    reset_slot = reset_col.empty()          # filled below once we know audio is loaded
     with right.popover("⚙︎ Model", width="stretch"):
         model_name = st.radio("Classifier", ["logreg", "rf"], key="model",
                               format_func={"logreg": "Logistic regression (default)",
                                            "rf": "Random forest"}.get)
 
-    tab_names = ["🎙️  Record / Upload", "📊  Your Voice vs. the Dataset",
-                 "🔊  How Noise Changes the Result"]
+    tab_names = TAB_NAMES
     # ?tab=2 or ?tab=3 in the URL opens that tab first.
     first = st.query_params.get("tab", "1")
     default = tab_names[int(first) - 1] if first in ("1", "2", "3") else tab_names[0]
+    # Shown above the tabs so it's visible whichever tab the visitor was on.
+    if st.session_state.pop("_deleted_flash", False):
+        st.success("Your audio and its analysis were deleted from this app's memory. "
+                   "Record or upload a new one in **Record / Upload**.", icon="🗑️")
     t1, t2, t3 = st.tabs(tab_names, key="main_tabs", default=default)
 
     # ---- Tab 1: input, checks, signal plots ---------------------------------
@@ -855,10 +891,13 @@ def main():
     with t1:
         source = tab_record()
         if source is not None:
+            raw, name = source
+            # Remember exactly what was cached so "Delete my audio" can remove it.
+            st.session_state._active_input = (raw, name, None)
             try:
-                raw, name = source
                 with st.spinner("Converting and measuring…"):
                     wav, notes = prepare_audio(raw, name)
+                    st.session_state._active_input = (raw, name, wav)
                     base = analyse(wav, "Background noise", "None", model_name)
                     warnings = check_voicing(base["feats"], base["level_drop_db"])
             except AudioProblem as p:
@@ -886,15 +925,29 @@ def main():
             st.info("Next: open **Your Voice vs. the Dataset** to see the score range and how "
                     "each measurement compares.", icon="👉")
 
+    if source is not None:
+        reset_slot.button("🗑️ Delete my audio", on_click=delete_my_audio,
+                          width="stretch", key="delete_audio",
+                          help="Done? Removes your recording and its analysis from this "
+                               "app's memory and resets the page so you can start over.")
+
     # ---- Tabs 2 and 3 -------------------------------------------------------
     with t2:
         if base is None:
-            show_problem(problem) if problem else empty_state("how it compares with the dataset")
+            # (plain if/else: a bare one-line conditional would be echoed to the
+            #  page as "None" by Streamlit's magic)
+            if problem:
+                show_problem(problem)
+            else:
+                empty_state("how it compares with the dataset")
         else:
             tab_dataset(base, model_name)
     with t3:
         if base is None or base["score"] is None:
-            show_problem(problem) if problem else empty_state("how recording quality moves the score")
+            if problem:
+                show_problem(problem)
+            else:
+                empty_state("how recording quality moves the score")
         else:
             tab_noise(wav, base, model_name)
 
