@@ -29,11 +29,12 @@ import parselmouth
 import plotly.graph_objects as go
 import soundfile as sf
 import streamlit as st
+import streamlit.components.v2  # noqa: F401  (raw-microphone component below)
 from plotly.subplots import make_subplots
 
 from features import (extract_features, analysis_traces, load_sound, FEATURE_COLUMNS,
                       VOICE_FEATURES, MFCC_FEATURES, TARGET_SR)
-from audio_tools import convert_to_wav, add_noise, mp3_compress, resample_4k
+from audio_tools import convert_to_wav, add_noise, mp3_compress, resample_4k, level_drop_db
 from common import make_model, grouped_folds
 
 # ---------------------------------------------------------------------------
@@ -57,6 +58,7 @@ MIN_VOICED_S = 1.0        # below this we refuse to score
 WARN_VOICED_S = 2.0       # below this we score but warn
 MAX_ANALYSE_S = 30.0      # longer recordings are cut to the first 30 s
 SILENCE_PEAK = 0.003      # peak amplitude below ~-50 dBFS = silence
+LEVEL_DROP_WARN_DB = 15   # volume collapse after the first 0.5 s (see level_drop_db)
 # Example for demos without a microphone (a healthy-control training recording).
 # (copy of figshare file AH_121A_BD5BA248-E807-4CB9-8B53-47E7FFE5F8E2.wav)
 EXAMPLE_FILE = "examples/example_healthy_control.wav"
@@ -274,10 +276,11 @@ def analyse(wav: bytes, kind: str, level: str, model_name: str) -> dict:
     feats = extract_features(snd)
     traces = analysis_traces(snd)
     return {"feats": feats, "score": score_range(feats, model_name),
-            "traces": traces, "wav": sound_to_wav_bytes(load_sound(snd))}
+            "traces": traces, "wav": sound_to_wav_bytes(load_sound(snd)),
+            "level_drop_db": level_drop_db(snd)}
 
 
-def check_voicing(feats: dict):
+def check_voicing(feats: dict, level_drop: float = 0.0):
     """Refuse to score recordings with too little voice; return warnings otherwise."""
     voiced = feats.get("voiced_duration_s", 0) or 0
     if np.isnan(feats["f0_mean_hz"]) or voiced == 0:
@@ -293,6 +296,13 @@ def check_voicing(feats: dict):
     if voiced < WARN_VOICED_S:
         warnings.append(f"Only {voiced:.1f} s of steady voice. Jitter and shimmer are less "
                         "reliable on short samples; 3-5 s is better.")
+    if level_drop > LEVEL_DROP_WARN_DB:
+        warnings.append(
+            f"The volume dropped by about {level_drop:.0f} dB after the first half-second. If "
+            "you didn't get quieter on purpose, your device is probably applying noise "
+            "suppression (it treats a steady “ahhh” as background noise). Try turning off "
+            "“Voice Isolation” / noise cancelling (macOS: Control Centre → Mic Mode → "
+            "Standard), or record with another app and upload the file.")
     if feats["voiced_fraction"] < 0.7:
         warnings.append("The pitch dropped out for part of the recording (breaks, noise "
                         "or a fading voice).")
@@ -549,9 +559,43 @@ def explain_score(score, oof: pd.DataFrame) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Raw microphone: switch off the browser's voice-call processing
+# ---------------------------------------------------------------------------
+# st.audio_input asks for the mic with getUserMedia({audio: true}). Browsers then
+# apply noise suppression, auto gain and echo cancellation by default. Noise
+# suppression treats a steady "ahhh" as background noise and fades it out within
+# 1-2 s (we measured ~18 dB on a constant test vowel in Chrome), which changes the
+# MFCCs and HNR the model reads. This invisible component runs in the app page and
+# wraps getUserMedia so audio requests ask for the RAW microphone instead.
+# Streamlit's recorder itself is unchanged.
+RAW_MIC_JS = """
+export default function () {
+  const md = navigator.mediaDevices;
+  if (!md || !md.getUserMedia || md.__pdVoiceRawMic) return;   // patch once per page
+  const original = md.getUserMedia.bind(md);
+  md.getUserMedia = (constraints) => {
+    if (constraints && constraints.audio) {
+      const base = typeof constraints.audio === "object" ? constraints.audio : {};
+      constraints = { ...constraints, audio: { ...base,
+        noiseSuppression: false, autoGainControl: false, echoCancellation: false } };
+    }
+    return original(constraints).then((stream) => {
+      const track = stream.getAudioTracks()[0];
+      if (track) window.__pdVoiceMicSettings = track.getSettings();  // for debugging
+      return stream;
+    });
+  };
+  md.__pdVoiceRawMic = true;
+}
+"""
+_raw_mic = st.components.v2.component("pd_voice.raw_mic", js=RAW_MIC_JS)
+
+
+# ---------------------------------------------------------------------------
 # Page sections
 # ---------------------------------------------------------------------------
 def header():
+    _raw_mic(key="raw_mic")          # must be on the page before anyone presses record
     st.markdown(CSS, unsafe_allow_html=True)
     st.markdown(
         f"""
@@ -589,7 +633,9 @@ def tab_record():
     st.write("")
     c1, c2 = st.columns(2, gap="large")
     recorded = c1.audio_input("Record with your microphone")
-    c1.caption("🔒 Your audio is analysed in memory and never saved to disk or shared.")
+    c1.caption("🔒 Your audio is analysed in memory and never saved to disk or shared. "
+               "Browser noise suppression and auto-volume are switched off so a steady "
+               "“ahhh” isn't faded out.")
     uploaded = c2.file_uploader("…or upload an audio file",
                                 help="WAV, MP3, M4A, OGG, WEBM, FLAC, AAC or OPUS, up to 25 MB")
 
@@ -810,7 +856,7 @@ def main():
                 with st.spinner("Converting and measuring…"):
                     wav, notes = prepare_audio(raw, name)
                     base = analyse(wav, "Background noise", "None", model_name)
-                    warnings = check_voicing(base["feats"])
+                    warnings = check_voicing(base["feats"], base["level_drop_db"])
             except AudioProblem as p:
                 problem, wav, base = p, None, None
                 show_problem(p)

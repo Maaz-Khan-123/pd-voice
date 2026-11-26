@@ -87,6 +87,26 @@ def mp3_compress(snd: parselmouth.Sound, kbps: int) -> parselmouth.Sound:
         return _wav_to_sound(wav_out)
 
 
+def level_drop_db(snd: parselmouth.Sound) -> float:
+    """How much quieter the voice gets after its first half-second (dB).
+
+    Browser/phone noise suppression treats a steady "ahhh" as background noise and
+    turns it down within 1-2 s. We compare the median loudness of 0.1-0.5 s after
+    voice onset with the median loudness from 1.0 s onwards. A steady voice gives
+    ~0 dB; Chrome's default processing gave ~19 dB on a constant test vowel. A few
+    real speakers also fade or start loudly, so callers treat this as a hint.
+    """
+    from features import load_sound, trim_to_voiced          # local import: avoid cycle
+    voiced, _ = trim_to_voiced(load_sound(snd))
+    x, sr = voiced.values[0], int(voiced.sampling_frequency)
+    w = int(0.1 * sr)                                        # 100 ms frames
+    db = np.array([20 * np.log10(np.sqrt(np.mean(x[i:i + w] ** 2)) + 1e-9)
+                   for i in range(0, len(x) - w + 1, w)])
+    if len(db) < 15:                                         # under 1.5 s: can't judge
+        return 0.0
+    return float(np.median(db[1:5]) - np.median(db[10:]))
+
+
 # The conditions tested in step 3: (name, family, level-for-plotting, function)
 CONDITIONS = [
     ("clean", "Clean", None, lambda s, seed: s),
