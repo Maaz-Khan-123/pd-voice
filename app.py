@@ -20,6 +20,7 @@ Every number shown comes from the same extract_features() used in training
 
 import io
 import json
+import os
 from pathlib import Path
 
 import joblib
@@ -62,9 +63,12 @@ WARN_VOICED_S = 2.0       # below this we score but warn
 MAX_ANALYSE_S = 30.0      # longer recordings are cut to the first 30 s
 SILENCE_PEAK = 0.003      # peak amplitude below ~-50 dBFS = silence
 LEVEL_DROP_WARN_DB = 15   # volume collapse after the first 0.5 s (see level_drop_db)
-# Optional sample for demos without a microphone. No dataset recording is shipped
-# (dataset audio stays out of the repo); add your own recording here to enable it.
-SAMPLE_FILE = "assets/sample.wav"
+# Sample shown automatically before the visitor records anything. No dataset
+# recording is shipped (dataset audio stays out of the repo): add your own recording
+# of a healthy adult saying "ahhh" here. PD_VOICE_SAMPLE overrides the path (testing).
+SAMPLE_FILE = os.environ.get("PD_VOICE_SAMPLE", "assets/sample.wav")
+SAMPLE_LABEL = ("Showing a sample recording of a healthy adult speaker. "
+                "Record or upload your own to replace it.")
 
 FEATURE_LABELS = {
     "f0_mean_hz": ("Mean pitch", "Hz", "How high the voice is."),
@@ -79,7 +83,7 @@ CSS = f"""
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 /* Spacing uses multiples of 8px throughout; cards have a 12px radius. */
-.block-container {{ max-width: 1080px; padding-top: 40px; padding-bottom: 80px; }}
+.block-container {{ max-width: 1080px; padding-top: 24px; padding-bottom: 32px; }}
 [data-testid="stHeader"] {{ background: transparent; }}
 h1, h2, h3, h4 {{ letter-spacing: -0.01em; }}
 h4 {{ font-size: 16px !important; font-weight: 600 !important; margin: 24px 0 8px 0 !important; }}
@@ -91,16 +95,23 @@ h4 {{ font-size: 16px !important; font-weight: 600 !important; margin: 24px 0 8p
              border: 1px solid {GRID}; border-radius: 8px; background: transparent;
              color: {TEXT_2}; font-size: 13px; line-height: 1.4; }}
 
-/* The same notice, muted, pinned to the bottom of the window */
-.rp-footer {{ position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
-             padding: 8px 16px calc(8px + env(safe-area-inset-bottom, 0px));
-             background: {BG}; border-top: 1px solid {GRID};
-             color: {TEXT_2}; font-size: 12px; text-align: center; }}
-
 /* Record tab: the three steps as one compact line */
-.rp-steps {{ display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 8px 0 16px 0;
+.rp-steps {{ display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 0 0 8px 0;
             color: {TEXT_2}; font-size: 13px; line-height: 1.5; }}
 .rp-steps b {{ color: {TEXT}; font-weight: 600; margin-right: 8px; }}
+
+/* Sample label and the four summary tiles (outline only, no fill) */
+.rp-sample-label {{ color: {TEXT_2}; font-size: 13px; margin: 8px 0 0 0; }}
+.rp-tiles {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
+            margin: 8px 0 16px 0; }}
+@media (max-width: 640px) {{ .rp-tiles {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} }}
+.rp-tile {{ border: 1px solid {GRID}; border-radius: 12px; background: transparent;
+           padding: 8px 16px; min-width: 0; }}
+.rp-tile-label {{ color: {TEXT_2}; font-size: 12px; }}
+.rp-tile-value {{ font-size: 18px; font-weight: 600; line-height: 1.4; }}
+.rp-tile-value.accent {{ color: {ACCENT}; }}
+.rp-tile-sub {{ color: {TEXT_2}; font-size: 12px; white-space: nowrap; overflow: hidden;
+               text-overflow: ellipsis; }}
 
 /* Cards and numbers */
 .rp-card {{ background: {PANEL}; border: 1px solid {GRID}; border-radius: 12px;
@@ -406,7 +417,7 @@ def fig_signal(tr) -> go.Figure:
     fig.update_yaxes(title_text="Hz", row=2, col=1)
     fig.update_yaxes(title_text="Hz", row=3, col=1)
     fig.update_xaxes(title_text="Time (s)", row=3, col=1)
-    style(fig, 620)
+    style(fig, 540)
     fig.update_annotations(font=dict(size=12, color=TEXT_2), x=0, xanchor="left")
     return fig
 
@@ -614,7 +625,6 @@ def header():
         <div class="rp-title">Sustained-Vowel Voice Analysis</div>
         <div class="rp-sub">A sustained “ahhh”, measured with Praat and compared with a small research dataset.</div>
         <div class="rp-notice">{PROTOTYPE}. Trained on 81 telephone recordings.</div>
-        <div class="rp-footer">{PROTOTYPE}</div>
         """, unsafe_allow_html=True)
 
 
@@ -629,6 +639,12 @@ def show_problem(p: AudioProblem):
 
 
 def tab_record():
+    """Controls for the Record tab. Returns (raw_bytes, filename, is_sample) or None.
+
+    The visitor's own recording/upload always wins. Otherwise the sample in
+    SAMPLE_FILE is loaded automatically so the page is never blank. If there is
+    no sample file, nothing is loaded and a short note explains why.
+    """
     # The three steps, as one compact line above the controls.
     st.markdown(
         "<div class='rp-steps'>"
@@ -637,49 +653,39 @@ def tab_record():
         "<span><b>3</b>Hold it for 3-5 seconds, then stop</span>"
         "</div>", unsafe_allow_html=True)
 
-    c1, c2 = st.columns(2, gap="large")
-    v = st.session_state.get("input_version", 0)     # bumped by "Delete my audio"
+    c1, c2 = st.columns(2, gap="medium")
+    v = st.session_state.get("input_version", 0)     # bumped when the visitor's audio is cleared
     recorded = c1.audio_input("Record", key=f"rec_{v}")
-    delete_slot = c1.empty()          # "Delete my audio" appears here once audio is loaded
-    # Softer wording until /dev/shm (RAM-only temp files) is confirmed on the host;
-    # see the "Temporary audio files" line under Advanced.
-    c1.caption("Audio is used only for this analysis and is not stored permanently.")
     uploaded = c2.file_uploader("Or upload a file", key=f"up_{v}",
                                 help="WAV, MP3, M4A, OGG, WEBM, FLAC, AAC or OPUS, up to 25 MB")
-
-    # Sample recording for demos without a microphone. If the file is missing the
-    # button is disabled with a short note, rather than crashing.
+    user_audio = uploaded or recorded
     sample_ok = Path(SAMPLE_FILE).is_file()
-    if c2.button("Use a sample recording", key="use_sample",
-                 disabled=(not sample_ok) or bool(uploaded or recorded)):
-        st.session_state.use_example = not st.session_state.get("use_example", False)
-    if not sample_ok:
-        c2.caption("No sample recording is included. To enable this button, add your own "
-                   f"recording (not from the dataset) as {SAMPLE_FILE}.")
-    # ?example=1 in the URL pre-loads the sample (handy as a demo bookmark).
-    if sample_ok and st.query_params.get("example") == "1" and "use_example" not in st.session_state:
-        st.session_state.use_example = True
-    use_example = (sample_ok and st.session_state.get("use_example", False)
-                   and not (uploaded or recorded))
-    if use_example:
-        c2.caption("Using the sample recording.")
 
-    if uploaded or recorded or use_example:
-        delete_slot.button("Delete my audio", on_click=delete_my_audio,
-                           width="stretch", key="delete_audio",
-                           help="Removes your recording and its analysis from this app's "
-                                "memory and resets the page.")
+    # Buttons appear only while the visitor's own audio is loaded.
+    if user_audio:
+        c1.button("Delete my audio", on_click=forget_user_audio, kwargs={"confirm": True},
+                  width="stretch", key="delete_audio",
+                  help="Removes your recording and its analysis from this app's memory.")
+        if sample_ok:
+            c2.button("Back to sample", on_click=forget_user_audio, kwargs={"confirm": False},
+                      width="stretch", key="back_to_sample",
+                      help="Removes your recording from this app's memory and shows the "
+                           "sample recording again.")
+    # Softer wording until /dev/shm (RAM-only temp files) is confirmed on the host;
+    # see the "Temporary audio files" line under Advanced.
+    st.caption("Audio is used only for this analysis and is not stored permanently.")
 
     if uploaded and recorded:
         st.caption("Using the uploaded file. Remove it to analyse your recording instead.")
-    if uploaded or recorded:
-        src = uploaded or recorded
-        return src.getvalue(), getattr(src, "name", "") or "recording.wav"
-    if use_example:
+    if user_audio:
+        return user_audio.getvalue(), getattr(user_audio, "name", "") or "recording.wav", False
+    if sample_ok:
         try:
-            return Path(SAMPLE_FILE).read_bytes(), Path(SAMPLE_FILE).name
+            return Path(SAMPLE_FILE).read_bytes(), Path(SAMPLE_FILE).name, True
         except OSError:
-            st.caption(f"Sample recording unavailable ({SAMPLE_FILE} could not be read).")
+            pass
+    st.caption("No sample recording is included. Add your own recording (not from the "
+               f"dataset) as {SAMPLE_FILE} to show one here before anything is recorded.")
     return None
 
 
@@ -860,15 +866,16 @@ def advanced_settings():
 TAB_NAMES = ["Record", "Your voice vs. dataset", "Noise test", "Evaluation"]
 
 
-def delete_my_audio():
-    """Button callback: forget this visitor's audio everywhere the app keeps it.
+def forget_user_audio(confirm: bool = True):
+    """Button callback for "Delete my audio" and "Back to sample".
 
-    1. Remove this input's entries from the in-memory caches: the converted WAV
+    1. Remove the visitor's input from the in-memory caches: the converted WAV
        (prepare_audio) and every analysis of it (analyse) for every degradation
-       level and both models. Other visitors' entries are untouched.
+       level and both models. Other visitors' entries and the sample are untouched.
     2. Give the recorder and uploader new keys, so Streamlit discards the old
-       widgets and the browser's copy of the recording.
-    3. Reset the sample toggle and degradation sliders, and show a confirmation.
+       widgets and the browser's copy of the recording. The page then falls back
+       to the sample recording (if there is one).
+    3. Reset the degradation sliders; show a confirmation if `confirm` is True.
     """
     active = st.session_state.pop("_active_input", None)
     if active is not None:
@@ -881,10 +888,52 @@ def delete_my_audio():
                         analyse.clear(wav, kind, level, model)
     for k in [k for k in st.session_state if k.startswith("deg_")]:
         del st.session_state[k]
-    st.session_state.use_example = False          # also overrides ?example=1
     st.query_params.clear()
     st.session_state.input_version = st.session_state.get("input_version", 0) + 1
-    st.session_state._deleted_flash = True
+    if confirm:
+        st.session_state._deleted_flash = True
+
+
+def summary_tiles(base: dict, issues: list[str]):
+    """Four outline tiles under the controls: voice duration, pitch, score, quality."""
+    f, score = base["feats"], base["score"]
+    rng = "n/a" if score is None else f"{score[1]:.2f}–{score[2]:.2f}"
+    if not issues:
+        quality, why = "Good", "no problems detected"
+    else:
+        quality = "Fair" if len(issues) == 1 else "Poor"
+        why = issues[0].split(".")[0]
+        why = why if len(why) <= 60 else why[:57] + "..."
+    tiles = [("Voiced duration", f"{f['voiced_duration_s']:.1f} s", "steady voice found"),
+             ("Mean pitch", f"{f['f0_mean_hz']:.0f} Hz", "average over the vowel"),
+             ("Score range", rng, "5th-95th pct of 100 models"),
+             ("Recording quality", quality, why)]
+    st.markdown("<div class='rp-tiles'>" + "".join(
+        f"<div class='rp-tile'><div class='rp-tile-label'>{label}</div>"
+        f"<div class='rp-tile-value{' accent' if label == 'Score range' else ''}'>{value}</div>"
+        f"<div class='rp-tile-sub'>{sub}</div></div>" for label, value, sub in tiles)
+        + "</div>", unsafe_allow_html=True)
+
+
+def record_results(base: dict, model_name: str):
+    """Everything shown on the Record tab once audio (or the sample) is analysed."""
+    show(fig_signal(base["traces"]), key="chart_signal")
+    if base["score"] is None:
+        st.warning("Some features couldn't be measured, so no score can be shown.")
+        return
+    point, lo, hi = base["score"]
+    st.markdown("<p class='rp-explain' style='margin-top:0'>In this dataset the score mostly "
+                "reflects age and recording quality, not Parkinson's. See the Evaluation tab.</p>",
+                unsafe_allow_html=True)
+    c1, c2 = st.columns([1, 2.6], gap="medium")
+    with c1:
+        st.markdown(f"<div class='rp-card'><div class='rp-stat-label'>Score range</div>"
+                    f"<div class='rp-range'>{lo:.2f} – {hi:.2f}</div>"
+                    f"<div class='rp-muted'>central estimate {point:.2f} · scale 0-1</div>"
+                    f"<div class='rp-muted' style='margin-top:8px'>Not a probability of "
+                    f"having Parkinson's.</div></div>", unsafe_allow_html=True)
+    with c2:
+        show(fig_score(base["score"], held_out_scores(model_name)), key="chart_score_record")
 
 
 def main():
@@ -902,18 +951,20 @@ def main():
         st.success("Your audio and its analysis were deleted from this app's memory.")
     t1, t2, t3, t4 = st.tabs(TAB_NAMES, key="main_tabs", default=default)
 
-    # ---- Record: input, checks, signal plots --------------------------------
-    wav, base, problem = None, None, None
+    # ---- Record: controls, then results (the sample's, until the visitor records) --
+    wav, base, problem, is_sample = None, None, None, False
     with t1:
         source = tab_record()
         if source is not None:
-            raw, name = source
-            # Remember exactly what was cached so "Delete my audio" can remove it.
-            st.session_state._active_input = (raw, name, None)
+            raw, name, is_sample = source
+            if not is_sample:
+                # Remember exactly what was cached so it can be deleted later.
+                st.session_state._active_input = (raw, name, None)
             try:
                 with st.spinner("Converting and measuring..."):
                     wav, notes = prepare_audio(raw, name)
-                    st.session_state._active_input = (raw, name, wav)
+                    if not is_sample:
+                        st.session_state._active_input = (raw, name, wav)
                     base = analyse(wav, "Background noise", "None", model_name)
                     warnings = check_voicing(base["feats"], base["level_drop_db"])
             except AudioProblem as p:
@@ -925,21 +976,13 @@ def main():
                 show_problem(problem)
 
         if base is not None:
-            f = base["feats"]
-            chips = [("ok", f"{f['voiced_duration_s']:.1f} s of voice"),
-                     ("ok", f"Pitch {f['f0_mean_hz']:.0f} Hz"),
-                     ("ok", f"Analysed at {TARGET_SR // 1000} kHz")]
-            chips += [("warn", w.split(".")[0]) for w in warnings + notes]
-            st.markdown("<div class='rp-chips'>" + "".join(
-                f"<span class='rp-chip {k}'>{t}</span>" for k, t in chips) + "</div>",
-                unsafe_allow_html=True)
+            if is_sample:
+                st.markdown(f"<div class='rp-sample-label'>{SAMPLE_LABEL}</div>",
+                            unsafe_allow_html=True)
+            summary_tiles(base, warnings + notes)
             for w in warnings + notes:
                 st.warning(w)
-            st.caption("What the model hears (mono, 8 kHz telephone quality, volume-normalised)")
-            st.audio(base["wav"], format="audio/wav")
-            show(fig_signal(base["traces"]), key="chart_signal")
-            st.caption("Next: open Your voice vs. dataset to see the score range and how each "
-                       "measurement compares.")
+            record_results(base, model_name)
 
     # ---- Your voice vs. dataset, Noise test --------------------------------
     with t2:
@@ -951,6 +994,9 @@ def main():
             else:
                 empty_state("how it compares with the dataset")
         else:
+            if is_sample:
+                st.caption("Showing the sample recording. Record or upload your own in the "
+                           "Record tab to replace it.")
             tab_dataset(base, model_name)
     with t3:
         if base is None or base["score"] is None:
@@ -959,6 +1005,9 @@ def main():
             else:
                 empty_state("how recording quality moves the score")
         else:
+            if is_sample:
+                st.caption("Showing the sample recording. Record or upload your own in the "
+                           "Record tab to replace it.")
             tab_noise(wav, base, model_name)
 
     # ---- Evaluation (needs no audio) ----------------------------------------
