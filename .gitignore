@@ -12,3 +12,7 @@ data/
 .DS_Store
 .vscode/
 .idea/
+
+# Audio: only the app's sample may be tracked
+*.wav
+!assets/sample.wav

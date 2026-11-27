@@ -67,8 +67,13 @@ LEVEL_DROP_WARN_DB = 15   # volume collapse after the first 0.5 s (see level_dro
 # recording is shipped (dataset audio stays out of the repo): add your own recording
 # of a healthy adult saying "ahhh" here. PD_VOICE_SAMPLE overrides the path (testing).
 SAMPLE_FILE = os.environ.get("PD_VOICE_SAMPLE", "assets/sample.wav")
-SAMPLE_LABEL = ("Showing a sample recording of a healthy adult speaker. "
+SAMPLE_LABEL = ("Sample from the research dataset (healthy control). "
                 "Record or upload your own to replace it.")
+# Paste the exact citation and link from the figshare page here; the line under the
+# sample label shows them. (Left empty on purpose until the exact text is supplied.)
+SAMPLE_CITATION = ""
+SAMPLE_CITATION_URL = ""
+HELD_OUT_NOTE = "Held-out score: from models that never saw this speaker."
 
 FEATURE_LABELS = {
     "f0_mean_hz": ("Mean pitch", "Hz", "How high the voice is."),
@@ -102,6 +107,8 @@ h4 {{ font-size: 16px !important; font-weight: 600 !important; margin: 24px 0 8p
 
 /* Sample label and the four summary tiles (outline only, no fill) */
 .rp-sample-label {{ color: {TEXT_2}; font-size: 13px; margin: 8px 0 0 0; }}
+.rp-sample-cite {{ color: {TEXT_2}; font-size: 12px; margin: 0; opacity: 0.85; }}
+.rp-sample-cite a {{ color: {TEXT_2}; text-decoration: underline; }}
 .rp-tiles {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
             margin: 8px 0 16px 0; }}
 @media (max-width: 640px) {{ .rp-tiles {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} }}
@@ -177,6 +184,47 @@ def held_out_scores(model_name: str) -> pd.DataFrame:
     for tr, te in grouped_folds(y, groups, 0):
         oof[te] = make_model(model_name).fit(X[tr], y[tr]).predict_proba(X[te])[:, 1]
     return pd.DataFrame({"label": y, "score": oof})
+
+
+@st.cache_data
+def sample_training_row(_mtime: float) -> int | None:
+    """Row of results/features.csv that IS the sample recording, or None.
+
+    Found by matching the 18 measurements exactly (the sample's samples are
+    identical to the dataset file), so no participant ID is stored anywhere.
+    `_mtime` (the file's modification time) refreshes the cache if the file changes.
+    """
+    if not Path(SAMPLE_FILE).is_file():
+        return None
+    f = extract_features(SAMPLE_FILE)
+    train = load_training_features()
+    dist = ((train[FEATURE_COLUMNS] - pd.Series(f)[FEATURE_COLUMNS]).abs()
+            / train[FEATURE_COLUMNS].std()).sum(axis=1)
+    row = int(dist.idxmin())
+    return row if dist[row] < 1e-6 else None
+
+
+@st.cache_data
+def sample_held_out_score(row: int, model_name: str) -> tuple[float, float, float]:
+    """The sample speaker's held-out score from step 2's grouped cross-validation.
+
+    Same splits and seeds as step2_train_evaluate.py (20 repeats x 5 folds): in each
+    repeat, a model is trained on the folds that do NOT contain this speaker and
+    scores them. Returns (median, 5th pct, 95th pct) of those 20 held-out scores.
+    """
+    from common import N_REPEATS
+    train = load_training_features()
+    X, y = train[FEATURE_COLUMNS].to_numpy(float), train["label"].to_numpy()
+    groups = train["sample_id"].to_numpy()
+    scores = []
+    for rep in range(N_REPEATS):
+        for tr, te in grouped_folds(y, groups, rep):
+            if row in te:
+                model = make_model(model_name).fit(X[tr], y[tr])
+                scores.append(model.predict_proba(X[[row]])[0, 1])
+                break
+    s = np.array(scores)
+    return float(np.median(s)), float(np.percentile(s, 5)), float(np.percentile(s, 95))
 
 
 def score_range(feats: dict, model_name: str):
@@ -326,8 +374,13 @@ def check_voicing(feats: dict, level_drop: float = 0.0):
         warnings.append("The pitch dropped out for part of the recording (breaks, noise "
                         "or a fading voice).")
     train = load_training_features()
-    outside = [FEATURE_LABELS[c][0] for c in VOICE_FEATURES
-               if not (train[c].min() <= feats[c] <= train[c].max())]
+    # 1% tolerance: format conversion (e.g. to 16-bit) can nudge a value at the very
+    # edge of the training range just past it, which isn't meaningfully "outside".
+    def outside_range(c):
+        lo, hi = train[c].min(), train[c].max()
+        tol = 0.01 * (hi - lo)
+        return not (lo - tol <= feats[c] <= hi + tol)
+    outside = [FEATURE_LABELS[c][0] for c in VOICE_FEATURES if outside_range(c)]
     if outside:
         warnings.append("Outside the range of all 81 training speakers: " + ", ".join(outside)
                         + ". The model has never seen values like this.")
@@ -422,20 +475,34 @@ def fig_signal(tr) -> go.Figure:
     return fig
 
 
-def fig_score(score, oof: pd.DataFrame) -> go.Figure:
-    """Your score range on the same 0-1 axis as the 81 held-out dataset speakers."""
+def fig_score(score, oof: pd.DataFrame, mark_row: int | None = None) -> go.Figure:
+    """Your score range on the same 0-1 axis as the 81 held-out dataset speakers.
+
+    `mark_row` (a row of results/features.csv) rings that speaker's dot, used to
+    show where the sample recording's speaker sits among the others.
+    """
     point, lo, hi = score
     rng = np.random.default_rng(1)
     fig = go.Figure()
     fig.add_vrect(x0=0.5, x1=1, fillcolor=PD_COLOR, opacity=0.05, line_width=0)
     fig.add_vrect(x0=0, x1=0.5, fillcolor=HC_COLOR, opacity=0.05, line_width=0)
+    marked = None
     for lab, name, color, y in ((0, "Healthy speakers (held out)", HC_COLOR, 2),
                                 (1, "Parkinson's speakers (held out)", PD_COLOR, 1)):
         s = oof.loc[oof.label == lab, "score"]
+        ys = y + rng.uniform(-0.22, 0.22, len(s))
+        if mark_row is not None and mark_row in s.index:
+            marked = (float(s[mark_row]), float(ys[list(s.index).index(mark_row)]))
         fig.add_trace(go.Scatter(
-            x=s, y=y + rng.uniform(-0.22, 0.22, len(s)), mode="markers", name=name,
+            x=s, y=ys, mode="markers", name=name,
             marker=dict(size=8, color=color, line=dict(width=1, color=BG)),
             hovertemplate=f"{name}<br>score %{{x:.2f}}<extra></extra>"))
+    if marked is not None:
+        fig.add_trace(go.Scatter(
+            x=[marked[0]], y=[marked[1]], mode="markers+text", text=["sample"],
+            textposition="top center", textfont=dict(color=TEXT, size=11),
+            marker=dict(size=16, color="rgba(0,0,0,0)", line=dict(width=2, color=ACCENT)),
+            hovertemplate="The sample's speaker, scored held out: %{x:.2f}<extra></extra>"))
     fig.add_trace(go.Scatter(x=[lo, hi], y=[0, 0], mode="lines",
                              line=dict(color=ACCENT, width=12), hoverinfo="skip"))
     fig.add_trace(go.Scatter(
@@ -906,7 +973,8 @@ def summary_tiles(base: dict, issues: list[str]):
         why = why if len(why) <= 60 else why[:57] + "..."
     tiles = [("Voiced duration", f"{f['voiced_duration_s']:.1f} s", "steady voice found"),
              ("Mean pitch", f"{f['f0_mean_hz']:.0f} Hz", "average over the vowel"),
-             ("Score range", rng, "5th-95th pct of 100 models"),
+             ("Score range", rng, "held out, 20 CV repeats" if base.get("held_out")
+              else "5th-95th pct of 100 models"),
              ("Recording quality", quality, why)]
     st.markdown("<div class='rp-tiles'>" + "".join(
         f"<div class='rp-tile'><div class='rp-tile-label'>{label}</div>"
@@ -930,10 +998,13 @@ def record_results(base: dict, model_name: str):
         st.markdown(f"<div class='rp-card'><div class='rp-stat-label'>Score range</div>"
                     f"<div class='rp-range'>{lo:.2f} – {hi:.2f}</div>"
                     f"<div class='rp-muted'>central estimate {point:.2f} · scale 0-1</div>"
-                    f"<div class='rp-muted' style='margin-top:8px'>Not a probability of "
-                    f"having Parkinson's.</div></div>", unsafe_allow_html=True)
+                    f"<div class='rp-muted' style='margin-top:8px'>"
+                    + (HELD_OUT_NOTE + " " if base.get("held_out") else "")
+                    + "Not a probability of having Parkinson's.</div></div>",
+                    unsafe_allow_html=True)
     with c2:
-        show(fig_score(base["score"], held_out_scores(model_name)), key="chart_score_record")
+        show(fig_score(base["score"], held_out_scores(model_name), base.get("mark_row")),
+             key="chart_score_record")
 
 
 def main():
@@ -975,14 +1046,29 @@ def main():
                                                   f"Please try another recording. ({type(e).__name__})"), None, None
                 show_problem(problem)
 
+        # For the sample (a dataset speaker), show the held-out score from the grouped
+        # cross-validation instead of the score from models trained on all 81 speakers.
+        # `shown` is used by Record and Your voice vs. dataset; Noise test keeps `base`.
+        shown = base
+        if base is not None and is_sample:
+            row = sample_training_row(Path(SAMPLE_FILE).stat().st_mtime)
+            if row is not None:
+                shown = {**base, "score": sample_held_out_score(row, model_name),
+                         "held_out": True, "mark_row": row}
+
         if base is not None:
             if is_sample:
-                st.markdown(f"<div class='rp-sample-label'>{SAMPLE_LABEL}</div>",
+                cite = SAMPLE_CITATION or "Dataset citation to be added."
+                if SAMPLE_CITATION_URL:
+                    cite += (f" <a href='{SAMPLE_CITATION_URL}' target='_blank' "
+                             f"rel='noopener'>{SAMPLE_CITATION_URL}</a>")
+                st.markdown(f"<div class='rp-sample-label'>{SAMPLE_LABEL}</div>"
+                            f"<div class='rp-sample-cite'>{cite}</div>",
                             unsafe_allow_html=True)
-            summary_tiles(base, warnings + notes)
+            summary_tiles(shown, warnings + notes)
             for w in warnings + notes:
                 st.warning(w)
-            record_results(base, model_name)
+            record_results(shown, model_name)
 
     # ---- Your voice vs. dataset, Noise test --------------------------------
     with t2:
@@ -997,7 +1083,7 @@ def main():
             if is_sample:
                 st.caption("Showing the sample recording. Record or upload your own in the "
                            "Record tab to replace it.")
-            tab_dataset(base, model_name)
+            tab_dataset(shown, model_name)
     with t3:
         if base is None or base["score"] is None:
             if problem:
@@ -1006,8 +1092,9 @@ def main():
                 empty_state("how recording quality moves the score")
         else:
             if is_sample:
-                st.caption("Showing the sample recording. Record or upload your own in the "
-                           "Record tab to replace it.")
+                st.caption("Showing the sample recording. Here both scores come from the "
+                           "models trained on all 81 speakers (including this one), so the "
+                           "comparison shows the effect of recording quality only.")
             tab_noise(wav, base, model_name)
 
     # ---- Evaluation (needs no audio) ----------------------------------------
@@ -1039,8 +1126,9 @@ def tab_dataset(base: dict, model_name: str):
                         f"<div class='rp-muted'>central estimate {point:.2f} · scale 0-1</div>"
                         f"<p style='margin-top:16px'>In this dataset the score mostly reflects "
                         f"age and recording quality, not Parkinson's.</p>"
-                        f"<div class='rp-muted' style='margin-top:8px'>{PROTOTYPE}</div>"
-                        f"</div>", unsafe_allow_html=True)
+                        f"<div class='rp-muted' style='margin-top:8px'>"
+                        + (HELD_OUT_NOTE + " " if base.get("held_out") else "")
+                        + f"{PROTOTYPE}</div></div>", unsafe_allow_html=True)
         with c2:
             st.markdown(explain_score(base["score"], oof))
             st.caption("The score measures how much this recording's 18 measurements resemble "
@@ -1050,7 +1138,7 @@ def tab_dataset(base: dict, model_name: str):
                        "score more than the voice does (see Evaluation and Noise test). It is "
                        "**not** a probability of having Parkinson's. The range is the 5th-95th "
                        "percentile over 100 models, each trained on a resampled copy of the data.")
-        show(fig_score(base["score"], oof), key="chart_score")
+        show(fig_score(base["score"], oof, base.get("mark_row")), key="chart_score")
         st.caption("Dots: each of the 81 dataset speakers, scored by a model that never saw "
                    "them. The heavy overlap is why no single score can be trusted.")
 
