@@ -63,6 +63,7 @@ All code is in this folder; every script is commented.
 | `step1_extract_features.py` | Builds `results/features.csv`. |
 | `step2_train_evaluate.py` | Cross-validation, sanity checks, permutation test, final models. |
 | `step3_robustness.py` | Degradation test. |
+| `step4_covariates.py` | Covariate analysis: age + sex vs voice vs both, all speakers and age-matched. |
 | `app.py` | Streamlit app. |
 
 ### 2.1 Feature extraction (`features.py`)
@@ -182,33 +183,70 @@ Logistic regression (full table incl. random forest: `results/step3_robustness.c
 * Moderate MP3 (32-16 kbps) and quiet noise (30 dB) barely matter.
 * The random forest is less extreme (its scores move less) but its accuracy also falls to chance.
 
-### 3.3 App (`app.py`)
+### 3.3 Does the voice add anything beyond age? (`step4_covariates.py`)
 
-`.venv/bin/streamlit run app.py` (dark theme and fonts in `.streamlit/config.toml`).
+Same speaker-grouped CV as step 2 (100 test folds), logistic regression; random forest
+results are in `results/step4_covariates.csv` / `.json`. Models: **A** = age + sex,
+**B** = 18 voice features, **C** = age + sex + voice. The only age window where the two
+groups' ages are not significantly different is **55-80** (median 68 vs 68, p = 0.54),
+but it keeps just **11 healthy vs 34 Parkinson's** speakers, so balanced accuracy
+(chance = 0.50) is the fair measure there; plain accuracy is below the 75.6% you get by
+always guessing "Parkinson's". 40-80 is shown for comparison only: ages still differ there.
 
-* **Header** with a permanent "Research prototype, not a diagnosis" banner, plus a ribbon
-  pinned to the bottom of the window.
-* **Record / Upload:** microphone or file (any format ffmpeg reads) → WAV → interactive
-  Plotly waveform, pitch trace and spectrogram of the 8 kHz audio the model actually analyses.
-  A "Try an example recording" button loads one training-set file for demos without a
-  microphone (labelled as optimistic, since the model has heard that speaker).
-* **Your Voice vs. the Dataset:** a **score range** (5th-95th percentile over 100
-  bootstrap models), placed on the same axis as all 81 dataset speakers scored *held out*,
-  with a plain-language explanation that never gives a verdict. Each voice feature is
-  shown as a diamond over the healthy and Parkinson's distributions, with MFCCs and a
-  full table in expanders.
-* **How Noise Changes the Result:** choose noise / MP3 / low bandwidth and a severity;
-  waveform, spectrogram, audio and score update with a side-by-side before/after,
-  a table of which measurements moved, and the score at every severity.
-* **How this works and what it can't tell you:** dataset size, cross-validated accuracy,
-  permutation p-value and the main limits, shown under every tab.
+| Subset | Model | Accuracy (SD across folds) | Balanced accuracy (SD) | Always guess larger group |
+|---|---|---|---|---|
+| All speakers (41 HC / 40 PD) | A: age + sex | 0.817 (0.089) | 0.817 (0.089) | 0.506 |
+| All speakers (41 HC / 40 PD) | B: voice only | 0.606 (0.103) | 0.605 (0.103) | 0.506 |
+| All speakers (41 HC / 40 PD) | C: age + sex + voice | 0.780 (0.096) | 0.780 (0.096) | 0.506 |
+| Age-matched 55-80 (11 HC / 34 PD) | A: age + sex | 0.453 (0.162) | 0.390 (0.168) | 0.756 |
+| Age-matched 55-80 (11 HC / 34 PD) | B: voice only | 0.580 (0.158) | 0.492 (0.184) | 0.756 |
+| Age-matched 55-80 (11 HC / 34 PD) | C: age + sex + voice | 0.611 (0.152) | 0.513 (0.180) | 0.756 |
+| Ages 40-80 (not matched) (32 HC / 37 PD) | A: age + sex | 0.772 (0.089) | 0.772 (0.090) | 0.536 |
+| Ages 40-80 (not matched) (32 HC / 37 PD) | B: voice only | 0.597 (0.133) | 0.600 (0.134) | 0.536 |
+| Ages 40-80 (not matched) (32 HC / 37 PD) | C: age + sex + voice | 0.732 (0.106) | 0.731 (0.106) | 0.536 |
+
+**Adding voice to age does not improve on age alone.** With all speakers, C is lower than
+A (balanced accuracy 0.78 vs 0.82; C better in only
+4 of 20 repeats). In the age-matched 55-80 subset, C beats A only because A falls
+below chance (0.39); C itself (0.51) and the voice-only model (0.49) are at chance.
+Once age is removed, this dataset shows no detectable voice signal.
+
+### 3.4 App (`app.py`)
+
+`.venv/bin/streamlit run app.py` (dark theme and fonts in `.streamlit/config.toml`). The
+design is deliberately restrained: no emoji or icons, one green accent, neutral grays,
+8px spacing steps and 12px card corners.
+
+* **Header:** title, subtitle and a thin single-line notice, "Research prototype, not a
+  diagnosis. Trained on 81 telephone recordings." The same line is pinned, muted, to the
+  bottom of the window.
+* **Record:** the three steps on one compact line, then the recorder and the file upload
+  (any format ffmpeg reads) above the fold. "Use a sample recording" loads
+  `assets/sample.wav` (disabled with a short note if the file is missing). Then the
+  interactive waveform, pitch trace and spectrogram of the 8 kHz audio the model analyses.
+* **Your voice vs. dataset:** a **score range** (5th-95th percentile over 100 bootstrap
+  models) on the same axis as all 81 dataset speakers scored *held out*, with a
+  plain-language explanation that never gives a verdict, and each voice feature against
+  the healthy and Parkinson's distributions.
+* **Noise test:** choose noise / MP3 / low bandwidth and a severity; audio, waveform,
+  spectrogram and score update side by side with the original.
+* **Evaluation:** a bar chart of accuracy for voice features, recording properties, age
+  alone and chance (step 2), and a chart of Models A/B/C on all speakers and the
+  age-matched subset (step 4). The two sentences under each chart are generated from the
+  numbers, so they always describe what the results show.
+* **Advanced** (collapsed, bottom of page): logistic regression or random forest.
 * **Errors are handled with plain messages:** empty files, unsupported types, unreadable
   files, silence, clips under 0.5 s, recordings with under 1 s of steady voice, and noise
   without a pitch. Recordings over 30 s are trimmed; clipping and short voicing get warnings.
 * **Delete my audio:** once audio is loaded, a button directly under the recorder removes the
   visitor's recording and every cached analysis of it from the app's memory, resets the
   recorder/uploader, and shows a confirmation. Other visitors' data is untouched.
-* URL options for demos: `?example=1` pre-loads the example, `?tab=2` or `?tab=3` opens a tab.
+* **Privacy:** "Audio is analysed in memory and not saved." ffmpeg needs files, so the
+  app converts audio in a temporary folder that is deleted immediately; on Linux (e.g.
+  Streamlit Cloud) that folder is in RAM (`/dev/shm`). On macOS, which has no RAM folder,
+  the temporary files briefly touch disk before being deleted.
+* URL options for demos: `?example=1` pre-loads the sample, `?tab=2`, `3` or `4` opens a tab.
+* The app has no age, sex or medical inputs.
 
 ## 4. Limitations
 
@@ -216,7 +254,9 @@ Logistic regression (full table incl. random forest: `results/step3_robustness.c
    single 80/20 split could report anything from ~40% to ~85%.
 2. **Age confound.** Controls are ~20 years younger; age alone beats every voice model.
    Voices change with age, so any voice difference may be an age difference. The 40-80
-   subset is still unbalanced (median 51 vs 68). A proper study would age-match.
+   subset is still unbalanced (median 51 vs 68). The truly age-matched 55-80 subset has
+   only 11 healthy speakers, and there no model beats chance (section 3.3). A proper
+   study would recruit age-matched controls.
 3. **Recording-setup confound.** Each participant used their own phone. Recording-only
    features beat the voice features, and the two groups' IDs and age formats differ,
    suggesting separate collection pipelines. All files were peak-normalised and trimmed,
@@ -244,6 +284,7 @@ brew install ffmpeg
 .venv/bin/python step1_extract_features.py     # ~1 min
 .venv/bin/python step2_train_evaluate.py       # ~10 min (permutation tests)
 .venv/bin/python step3_robustness.py           # ~2 min first run
+.venv/bin/python step4_covariates.py           # ~3 min
 .venv/bin/streamlit run app.py
 ```
 Tested on macOS (Apple M2), Python 3.13, CPU only. Random seeds are fixed in `common.py`.
@@ -257,8 +298,8 @@ The repository is ready to deploy as-is:
 * `.streamlit/config.toml`: theme.
 * `models/voice_models.joblib` and `results/features.csv`: the trained models and the
   training features the app compares against (numbers only, no audio).
-* `examples/example_healthy_control.wav`: the single recording used by
-  "Try an example recording" (a copy of figshare file `AH_121A_…`).
+* `assets/sample.wav`: the single recording used by "Use a sample recording"
+  (a copy of figshare file `AH_121A_…`).
 
 The raw figshare recordings (`data/`) are **not** in the repository. Download them
 from figshare into `data/figshare/` to re-run steps 1-3.
@@ -266,8 +307,9 @@ from figshare into `data/figshare/` to re-run steps 1-3.
 Deploy: share.streamlit.io → *Create app* → pick this repo, branch `main`, main file
 `app.py` → *Advanced settings* → Python **3.13** → *Deploy*.
 
-Visitors' audio is processed in memory only (cached for at most an hour, never written
-to disk by the app or shared).
+Visitors' audio is processed in memory only (cached for at most an hour and removable
+with "Delete my audio"). ffmpeg's temporary files go in RAM (`/dev/shm`) on Linux hosts
+and are deleted immediately.
 
 ## Citations
 

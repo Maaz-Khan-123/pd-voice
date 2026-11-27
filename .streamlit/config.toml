@@ -11,7 +11,7 @@ secondaryBackgroundColor = "#1c1c20"
 textColor = "#ececec"
 borderColor = "#2c2c32"
 showWidgetBorder = true
-baseRadius = "0.6rem"
+baseRadius = "8px"
 # Inter is loaded in app.py's CSS; the system font is the fallback when offline.
 font = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
 headingFont = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"

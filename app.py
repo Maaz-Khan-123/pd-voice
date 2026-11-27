@@ -6,20 +6,20 @@ RESEARCH PROTOTYPE, NOT A DIAGNOSIS.
 Run:  .venv/bin/streamlit run app.py
 
 Layout
-  Header + permanent "Research prototype, not a diagnosis" banner (also pinned to
-  the bottom of the window).
-  Tab 1, Record / Upload: get audio, check it, show waveform / pitch / spectrogram.
-  Tab 2, Your Voice vs. the Dataset: score range + every feature against the
-         81 training speakers.
-  Tab 3, How Noise Changes the Result: degradation slider with live before/after.
-  Footer: "How this works and what it can't tell you".
+  Title, subtitle and a thin "Research prototype, not a diagnosis" notice (the same
+  line is pinned, muted, to the bottom of the window).
+  Record:                 compact steps, recorder + upload + sample, signal plots.
+  Your voice vs. dataset: score range + every feature against the 81 speakers.
+  Noise test:             degradation slider with live before/after.
+  Evaluation:             cross-validated results and the covariate analysis.
+  Advanced (collapsed, bottom of page): model selector.
 
 Every number shown comes from the same extract_features() used in training
 (features.py) and the same degradations used in the robustness test (audio_tools.py).
 """
 
 import io
-import tempfile
+import json
 from pathlib import Path
 
 import joblib
@@ -34,17 +34,20 @@ from plotly.subplots import make_subplots
 
 from features import (extract_features, analysis_traces, load_sound, FEATURE_COLUMNS,
                       VOICE_FEATURES, MFCC_FEATURES, TARGET_SR)
-from audio_tools import convert_to_wav, add_noise, mp3_compress, resample_4k, level_drop_db
+from audio_tools import (convert_to_wav, add_noise, mp3_compress, resample_4k, level_drop_db,
+                         memory_tempdir)
 from common import make_model, grouped_folds
 
 # ---------------------------------------------------------------------------
 # Look and feel
 # ---------------------------------------------------------------------------
-# One accent (aqua) for "your recording" and UI; blue = healthy group,
+# One accent (green) for "your recording" and UI; blue = healthy group,
 # orange = Parkinson's group. Validated together for colour-blind separation.
+# Neutral grays carry everything else (secondary text, comparison bars).
 ACCENT, HC_COLOR, PD_COLOR = "#00a888", "#338ced", "#e76624"
 BG, PANEL, GRID = "#131315", "#1c1c20", "#2a2a30"
-TEXT, TEXT_2 = "#ececec", "#9c9c9c"
+TEXT, TEXT_2 = "#ececec", "#9a9a9e"
+NEUTRAL, LIGHT_NEUTRAL, CHANCE_FILL = "#6e6e76", "#b9b9be", "#34343a"
 FONT = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
 
 PROTOTYPE = "Research prototype, not a diagnosis"
@@ -59,9 +62,9 @@ WARN_VOICED_S = 2.0       # below this we score but warn
 MAX_ANALYSE_S = 30.0      # longer recordings are cut to the first 30 s
 SILENCE_PEAK = 0.003      # peak amplitude below ~-50 dBFS = silence
 LEVEL_DROP_WARN_DB = 15   # volume collapse after the first 0.5 s (see level_drop_db)
-# Example for demos without a microphone (a healthy-control training recording).
-# (copy of figshare file AH_121A_BD5BA248-E807-4CB9-8B53-47E7FFE5F8E2.wav)
-EXAMPLE_FILE = "examples/example_healthy_control.wav"
+# Sample for demos without a microphone (a healthy-control training recording;
+# copy of figshare file AH_121A_BD5BA248-E807-4CB9-8B53-47E7FFE5F8E2.wav).
+SAMPLE_FILE = "assets/sample.wav"
 
 FEATURE_LABELS = {
     "f0_mean_hz": ("Mean pitch", "Hz", "How high the voice is."),
@@ -75,50 +78,53 @@ CSS = f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-/* page width and spacing */
-.block-container {{ max-width: 1120px; padding-top: 2.2rem; padding-bottom: 6rem; }}
+/* Spacing uses multiples of 8px throughout; cards have a 12px radius. */
+.block-container {{ max-width: 1080px; padding-top: 40px; padding-bottom: 80px; }}
 [data-testid="stHeader"] {{ background: transparent; }}
-h1, h2, h3 {{ letter-spacing: -0.01em; }}
+h1, h2, h3, h4 {{ letter-spacing: -0.01em; }}
+h4 {{ font-size: 16px !important; font-weight: 600 !important; margin: 24px 0 8px 0 !important; }}
 
-/* header */
-.rp-header {{ display: flex; align-items: flex-end; justify-content: space-between;
-             gap: 1rem; flex-wrap: wrap; margin-bottom: 0.9rem; }}
-.rp-title {{ font-size: 2rem !important; font-weight: 700; line-height: 1.15; margin: 0; }}
-.rp-sub {{ color: {TEXT_2}; font-size: 0.95rem; margin-top: 0.3rem; }}
-.rp-banner {{ display: flex; gap: 0.75rem; align-items: center; padding: 0.7rem 1rem;
-             border: 1px solid #5c3a24; background: #2a1d15; border-radius: 0.6rem;
-             color: #f6c9ad; font-size: 0.92rem; margin-bottom: 1.2rem; }}
-.rp-banner b {{ color: #ffd9c2; }}
+/* Title, subtitle and the thin notice */
+.rp-title {{ font-size: 28px; font-weight: 650; line-height: 1.2; margin: 0; }}
+.rp-sub {{ color: {TEXT_2}; font-size: 15px; margin-top: 8px; }}
+.rp-notice {{ display: inline-block; margin: 16px 0 8px 0; padding: 8px 16px;
+             border: 1px solid {GRID}; border-radius: 8px; background: transparent;
+             color: {TEXT_2}; font-size: 13px; line-height: 1.4; }}
 
-/* permanent ribbon pinned to the bottom of the window */
-.rp-ribbon {{ position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
-             text-align: center; padding: 0.45rem 1rem calc(0.45rem + env(safe-area-inset-bottom, 0px));
-             background: #2a1d15; border-top: 1px solid #5c3a24; color: #f6c9ad;
-             font-size: 0.82rem; font-weight: 600; letter-spacing: 0.02em; }}
+/* The same notice, muted, pinned to the bottom of the window */
+.rp-footer {{ position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
+             padding: 8px 16px calc(8px + env(safe-area-inset-bottom, 0px));
+             background: {BG}; border-top: 1px solid {GRID};
+             color: {TEXT_2}; font-size: 12px; text-align: center; }}
 
-/* cards and stats */
-.rp-card {{ background: {PANEL}; border: 1px solid {GRID}; border-radius: 0.7rem;
-           padding: 1rem 1.1rem; height: 100%; }}
-.rp-card h4 {{ margin: 0 0 0.35rem 0; font-size: 0.95rem; font-weight: 600; }}
-.rp-card p {{ margin: 0; color: {TEXT_2}; font-size: 0.88rem; line-height: 1.45; }}
-.rp-stat {{ font-size: 1.6rem; font-weight: 700; line-height: 1.1; }}
-.rp-stat-label {{ color: {TEXT_2}; font-size: 0.8rem; margin-top: 0.15rem; }}
-.rp-range {{ font-size: 2.1rem; font-weight: 700; color: {ACCENT}; line-height: 1.1; }}
-.rp-muted {{ color: {TEXT_2}; font-size: 0.86rem; }}
+/* Record tab: the three steps as one compact line */
+.rp-steps {{ display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 8px 0 16px 0;
+            color: {TEXT_2}; font-size: 13px; line-height: 1.5; }}
+.rp-steps b {{ color: {TEXT}; font-weight: 600; margin-right: 8px; }}
 
-/* quality-check chips */
-.rp-chips {{ display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0.4rem 0 0.8rem 0; }}
-.rp-chip {{ border-radius: 999px; padding: 0.22rem 0.7rem; font-size: 0.8rem;
-           border: 1px solid {GRID}; background: {PANEL}; }}
-.rp-chip.ok {{ border-color: #145c4e; color: #7fe0c8; }}
+/* Cards and numbers */
+.rp-card {{ background: {PANEL}; border: 1px solid {GRID}; border-radius: 12px;
+           padding: 16px; height: 100%; }}
+.rp-card h4 {{ margin: 0 0 8px 0 !important; font-size: 15px !important; font-weight: 600; }}
+.rp-card p {{ margin: 0; color: {TEXT_2}; font-size: 14px; line-height: 1.5; }}
+.rp-stat {{ font-size: 24px; font-weight: 650; line-height: 1.2; }}
+.rp-stat-label {{ color: {TEXT_2}; font-size: 13px; margin-top: 0; }}
+.rp-range {{ font-size: 32px; font-weight: 650; color: {ACCENT}; line-height: 1.2; }}
+.rp-muted {{ color: {TEXT_2}; font-size: 13px; }}
+.rp-explain {{ color: {TEXT}; font-size: 14px; line-height: 1.6; max-width: 72ch; margin: 8px 0 16px 0; }}
+
+/* Quality-check chips */
+.rp-chips {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 16px 0; }}
+.rp-chip {{ border-radius: 8px; padding: 4px 8px; font-size: 12px;
+           border: 1px solid {GRID}; background: {PANEL}; color: {TEXT_2}; }}
+.rp-chip.ok {{ color: {TEXT}; }}
 .rp-chip.warn {{ border-color: #6b5214; color: #f5d27a; }}
 
-/* tabs: larger, evenly spaced */
-.stTabs [data-baseweb="tab-list"] {{ gap: 1.6rem; border-bottom: 1px solid {GRID}; }}
-.stTabs [data-baseweb="tab"] {{ font-size: 0.98rem; font-weight: 600; padding: 0.6rem 0.1rem; }}
+/* Tabs: plain text, evenly spaced */
+.stTabs [data-baseweb="tab-list"] {{ gap: 24px; border-bottom: 1px solid {GRID}; }}
+.stTabs [data-baseweb="tab"] {{ font-size: 15px; font-weight: 500; padding: 8px 0; }}
 
-/* softer audio player */
-[data-testid="stAudio"] {{ margin: 0.2rem 0 0.6rem 0; }}
+[data-testid="stAudio"] {{ margin: 0 0 8px 0; }}
 </style>
 """
 
@@ -205,7 +211,9 @@ def prepare_audio(raw: bytes, filename: str) -> tuple[bytes, list[str]]:
             f"“{ext or 'no extension'}” isn't a supported audio type.",
             "Please use WAV, MP3, M4A, OGG, WEBM, FLAC, AAC or OPUS.")
 
-    with tempfile.TemporaryDirectory() as tmp:
+    # ffmpeg needs files: use a RAM-backed temp folder where available (see
+    # audio_tools.memory_tempdir); it is deleted as soon as this block ends.
+    with memory_tempdir() as tmp:
         src = Path(tmp) / f"input{ext}"
         src.write_bytes(raw)
         try:
@@ -301,7 +309,7 @@ def check_voicing(feats: dict, level_drop: float = 0.0):
             f"The volume dropped by about {level_drop:.0f} dB after the first half-second. If "
             "you didn't get quieter on purpose, your device is probably applying noise "
             "suppression (it treats a steady “ahhh” as background noise). Try turning off "
-            "“Voice Isolation” / noise cancelling (macOS: Control Centre → Mic Mode → "
+            "“Voice Isolation” or noise cancelling (on macOS: Control Centre, Mic Mode, "
             "Standard), or record with another app and upload the file.")
     if feats["voiced_fraction"] < 0.7:
         warnings.append("The pitch dropped out for part of the recording (breaks, noise "
@@ -428,7 +436,7 @@ def fig_score(score, oof: pd.DataFrame) -> go.Figure:
                      ticktext=["<b>Your recording</b>", "Parkinson's (dataset)", "Healthy (dataset)"],
                      showgrid=False)
     fig.update_xaxes(range=[0, 1], tickvals=[0, 0.25, 0.5, 0.75, 1],
-                     title_text="← more like the healthy group      ·      more like the Parkinson's group →",
+                     title_text="Score: 0 = like the healthy group, 1 = like the Parkinson's group",
                      title_font=dict(size=12, color=TEXT_2))
     return style(fig, 300)
 
@@ -555,7 +563,7 @@ def explain_score(score, oof: pd.DataFrame) -> str:
         msg = (f"**Every model places this recording on the Parkinson's-group side.** This "
                f"does **not** mean you have Parkinson's: when held out, {hc_high:.0%} of the "
                f"*healthy* speakers in the dataset also landed on this side, and background "
-               f"noise, the microphone and age all push scores this way (see tab 3).")
+               f"noise, the microphone and age all push scores this way (see Noise test).")
     if width > 0.4:
         msg += (f" The range is wide ({width:.2f}), so the answer depends a lot on which "
                 "81 speakers happened to be in the training data.")
@@ -603,66 +611,62 @@ def header():
     st.markdown(CSS, unsafe_allow_html=True)
     st.markdown(
         f"""
-        <div class="rp-header">
-          <div>
-            <div class="rp-title">Sustained-Vowel Voice Analysis</div>
-            <div class="rp-sub">What a 3-second “ahhh” does and doesn't reveal, measured with Praat</div>
-          </div>
-        </div>
-        <div class="rp-banner">⚠️ <div><b>{PROTOTYPE}.</b> A high-school research project trained
-          on 81 telephone recordings. It cannot tell you whether you have Parkinson's disease.
-          If you have health concerns, talk to a doctor.</div></div>
-        <div class="rp-ribbon">⚠️ {PROTOTYPE.upper()}</div>
+        <div class="rp-title">Sustained-Vowel Voice Analysis</div>
+        <div class="rp-sub">A sustained “ahhh”, measured with Praat and compared with a small research dataset.</div>
+        <div class="rp-notice">{PROTOTYPE}. Trained on 81 telephone recordings.</div>
+        <div class="rp-footer">{PROTOTYPE}</div>
         """, unsafe_allow_html=True)
 
 
 def empty_state(where: str):
     st.markdown(f"<div class='rp-card'><h4>No recording yet</h4><p>Record or upload a "
-                f"steady “ahhh” in the <b>Record / Upload</b> tab to see {where}.</p></div>",
+                f"steady “ahhh” in the <b>Record</b> tab to see {where}.</p></div>",
                 unsafe_allow_html=True)
 
 
 def show_problem(p: AudioProblem):
-    st.error(f"**{p.title}**  \n{p.advice}", icon="🎙️")
+    st.error(f"**{p.title}**  \n{p.advice}")
 
 
 def tab_record():
-    tips = st.columns(3)
-    for col, (h, p) in zip(tips, [
-        ("1 · Breathe in", "Sit upright in a quiet room, 20-30 cm from the microphone."),
-        ("2 · Say “ahhh”", "One steady vowel at a comfortable pitch and loudness."),
-        ("3 · Hold it 3-5 s", "Don't change pitch, don't stop. Then press stop."),
-    ]):
-        col.markdown(f"<div class='rp-card'><h4>{h}</h4><p>{p}</p></div>", unsafe_allow_html=True)
-    st.write("")
+    # The three steps, as one compact line above the controls.
+    st.markdown(
+        "<div class='rp-steps'>"
+        "<span><b>1</b>Sit 20-30 cm from the microphone in a quiet room</span>"
+        "<span><b>2</b>Say one steady “ahhh” at a comfortable pitch</span>"
+        "<span><b>3</b>Hold it for 3-5 seconds, then stop</span>"
+        "</div>", unsafe_allow_html=True)
+
     c1, c2 = st.columns(2, gap="large")
     v = st.session_state.get("input_version", 0)     # bumped by "Delete my audio"
-    recorded = c1.audio_input("Record with your microphone", key=f"rec_{v}")
+    recorded = c1.audio_input("Record", key=f"rec_{v}")
     delete_slot = c1.empty()          # "Delete my audio" appears here once audio is loaded
-    c1.caption("🔒 Your audio is analysed in memory and never saved to disk or shared. "
-               "Browser noise suppression and auto-volume are switched off so a steady "
-               "“ahhh” isn't faded out.")
-    uploaded = c2.file_uploader("…or upload an audio file", key=f"up_{v}",
+    c1.caption("Audio is analysed in memory and not saved.")
+    uploaded = c2.file_uploader("Or upload a file", key=f"up_{v}",
                                 help="WAV, MP3, M4A, OGG, WEBM, FLAC, AAC or OPUS, up to 25 MB")
 
-    # Demo fallback: one recording from the dataset, for when there's no microphone.
-    ex1, ex2 = st.columns([1, 3])
-    if ex1.button("Try an example recording", disabled=bool(uploaded or recorded)):
+    # Sample recording for demos without a microphone. If the file is missing the
+    # button is disabled with a short note, rather than crashing.
+    sample_ok = Path(SAMPLE_FILE).is_file()
+    if c2.button("Use a sample recording", key="use_sample",
+                 disabled=(not sample_ok) or bool(uploaded or recorded)):
         st.session_state.use_example = not st.session_state.get("use_example", False)
-    # ?example=1 in the URL pre-loads the example (handy as a demo bookmark).
-    if st.query_params.get("example") == "1" and "use_example" not in st.session_state:
+    if not sample_ok:
+        c2.caption(f"Sample recording unavailable ({SAMPLE_FILE} not found).")
+    # ?example=1 in the URL pre-loads the sample (handy as a demo bookmark).
+    if sample_ok and st.query_params.get("example") == "1" and "use_example" not in st.session_state:
         st.session_state.use_example = True
-    use_example = st.session_state.get("use_example", False) and not (uploaded or recorded)
+    use_example = (sample_ok and st.session_state.get("use_example", False)
+                   and not (uploaded or recorded))
     if use_example:
-        ex2.caption("Using a recording **from the training dataset**. The model has already "
-                    "heard this speaker, so its score is more optimistic than for a new voice. "
-                    "Click again to clear.")
+        c2.caption("Using the sample: a healthy-control speaker from the training data, so "
+                   "the model has heard this voice and its score is optimistic.")
 
     if uploaded or recorded or use_example:
-        delete_slot.button("🗑️ Delete my audio & start over", on_click=delete_my_audio,
+        delete_slot.button("Delete my audio", on_click=delete_my_audio,
                            width="stretch", key="delete_audio",
-                           help="Done? Removes your recording and its analysis from this "
-                                "app's memory and resets the page so you can start over.")
+                           help="Removes your recording and its analysis from this app's "
+                                "memory and resets the page.")
 
     if uploaded and recorded:
         st.caption("Using the uploaded file. Remove it to analyse your recording instead.")
@@ -670,8 +674,299 @@ def tab_record():
         src = uploaded or recorded
         return src.getvalue(), getattr(src, "name", "") or "recording.wav"
     if use_example:
-        return Path(EXAMPLE_FILE).read_bytes(), Path(EXAMPLE_FILE).name
+        try:
+            return Path(SAMPLE_FILE).read_bytes(), Path(SAMPLE_FILE).name
+        except OSError:
+            st.caption(f"Sample recording unavailable ({SAMPLE_FILE} could not be read).")
     return None
+
+
+def _eval_sentences_main(r: pd.DataFrame, chance: float) -> str:
+    """Two sentences for chart 1, worded from the numbers (not assumed)."""
+    voice, rec = r.loc["Voice (18 features)"].acc_mean, r.loc["Recording only (sanity check)"].acc_mean
+    age = r.loc["Age only"].acc_mean
+    best = max([("Age alone", age), ("recording properties alone", rec),
+                ("the voice features", voice)], key=lambda t: t[1])
+    s1 = (f"{best[0][0].upper() + best[0][1:]} separate{'s' if best[0] == 'Age alone' else ''} "
+          f"the groups best ({best[1]:.0%}); the voice features reach {voice:.0%}"
+          + (f", below a model that only sees recording length, loudness and noise floor ({rec:.0%})."
+             if rec > voice else f", above recording properties alone ({rec:.0%})."))
+    gap = voice - chance
+    s2 = (f"The voice model is {gap * 100:.0f} points above chance ({chance:.0%}), but a "
+          f"permutation test (p ≈ {PERM_P_VOICE}) shows a gap this size could easily arise by luck."
+          if PERM_P_VOICE > 0.05 else
+          f"The voice model is {gap * 100:.0f} points above chance ({chance:.0%}), and a "
+          f"permutation test (p ≈ {PERM_P_VOICE}) suggests this is unlikely to be luck.")
+    return f"{s1} {s2}"
+
+
+def _eval_sentences_covariates(cov: dict, model_name: str) -> str:
+    """Two sentences for chart 2, worded from the numbers (not assumed)."""
+    def bal(subset, model):
+        return next(x for x in cov["results"] if x["subset"] == subset
+                    and x["classifier"] == model_name and x["model"] == model)["bal_acc_mean"]
+    a_all, c_all = bal("All speakers", "A: age + sex"), bal("All speakers", "C: age + sex + voice")
+    m = "Age-matched 55-80"
+    a_m, b_m, c_m = (bal(m, "A: age + sex"), bal(m, "B: voice only"),
+                     bal(m, "C: age + sex + voice"))
+    info = cov["subsets"][m]
+    if c_all < a_all - 0.01:
+        s1 = (f"With all speakers, adding the voice to age and sex lowers balanced accuracy "
+              f"from {a_all:.2f} to {c_all:.2f}, so the voice adds nothing beyond age.")
+    elif c_all > a_all + 0.01:
+        s1 = (f"With all speakers, adding the voice to age and sex raises balanced accuracy "
+              f"from {a_all:.2f} to {c_all:.2f}.")
+    else:
+        s1 = (f"With all speakers, adding the voice to age and sex leaves balanced accuracy "
+              f"unchanged ({a_all:.2f} vs {c_all:.2f}).")
+    top = max(a_m, b_m, c_m)
+    if top <= 0.55:
+        s2 = (f"Among speakers aged 55-80, where both groups have the same median age "
+              f"({info['n_healthy']} healthy, {info['n_parkinsons']} Parkinson's), every model "
+              f"is at or below chance ({min(a_m, b_m, c_m):.2f}-{top:.2f}), so once age is "
+              f"removed there is no detectable voice signal in this data.")
+    else:
+        s2 = (f"Among speakers aged 55-80 ({info['n_healthy']} healthy, "
+              f"{info['n_parkinsons']} Parkinson's), the best model reaches {top:.2f}; with so "
+              f"few healthy speakers this estimate is very uncertain.")
+    return f"{s1} {s2}"
+
+
+def fig_eval_main(r: pd.DataFrame, chance: float) -> go.Figure:
+    """Chart 1: cross-validated accuracy for voice, recording-only, age and chance."""
+    rows = [("Voice features only", r.loc["Voice (18 features)"], ACCENT),
+            ("Recording properties only<br><span style='font-size:11px;color:%s'>"
+             "length, loudness, noise floor</span>" % TEXT_2,
+             r.loc["Recording only (sanity check)"], NEUTRAL),
+            ("Age alone", r.loc["Age only"], NEUTRAL)]
+    fig = go.Figure()
+    for name, row, color in rows:
+        fig.add_trace(go.Bar(
+            y=[name], x=[row.acc_mean], orientation="h", marker=dict(color=color),
+            error_x=dict(type="data", symmetric=False, array=[row.acc_p95 - row.acc_mean],
+                         arrayminus=[row.acc_mean - row.acc_p5], color=TEXT_2, thickness=1, width=4),
+            text=[f"{row.acc_mean:.0%}"], textposition="inside", insidetextanchor="start",
+            textfont=dict(color="#0b0b0c" if color == ACCENT else TEXT),
+            hovertemplate=f"{row.acc_mean:.1%} (5th-95th pct of folds "
+                          f"{row.acc_p5:.0%}-{row.acc_p95:.0%})<extra></extra>"))
+    fig.add_trace(go.Bar(y=["Chance<br><span style='font-size:11px;color:%s'>always guess the "
+                            "larger group</span>" % TEXT_2], x=[chance], orientation="h",
+                         marker=dict(color=CHANCE_FILL), text=[f"{chance:.0%}"],
+                         textposition="inside", insidetextanchor="start",
+                         textfont=dict(color=TEXT), hovertemplate=f"{chance:.1%}<extra></extra>"))
+    fig.add_vline(x=chance, line=dict(color=TEXT_2, dash="dot", width=1))
+    fig.update_xaxes(range=[0, 1], tickformat=".0%", title_text="Accuracy on unseen speakers "
+                     "(bar = mean of 100 folds, line = 5th-95th percentile)",
+                     title_font=dict(size=12, color=TEXT_2))
+    fig.update_yaxes(autorange="reversed", showgrid=False)
+    fig.update_layout(bargap=0.4)
+    return style(fig, 300)
+
+
+def fig_eval_covariates(cov: dict, model_name: str) -> go.Figure:
+    """Chart 2: Models A/B/C, all speakers vs the age-matched subset (balanced accuracy)."""
+    subsets = [("All speakers", "All speakers"), ("Age-matched 55-80", "Ages 55-80, age-matched")]
+    models = [("A: age + sex", "A: age + sex", NEUTRAL),
+              ("B: voice only", "B: voice only", ACCENT),
+              ("C: age + sex + voice", "C: age + sex + voice", LIGHT_NEUTRAL)]
+    xlabels = []
+    for key, label in subsets:
+        info = cov["subsets"][key]
+        xlabels.append(f"{label}<br><span style='font-size:11px;color:{TEXT_2}'>"
+                       f"{info['n_healthy']} healthy, {info['n_parkinsons']} Parkinson's</span>")
+    fig = go.Figure()
+    for mkey, mlabel, color in models:
+        vals = [next(x for x in cov["results"] if x["subset"] == s and x["model"] == mkey
+                     and x["classifier"] == model_name) for s, _ in subsets]
+        fig.add_trace(go.Bar(
+            name=mlabel, x=xlabels, y=[v["bal_acc_mean"] for v in vals], marker=dict(color=color),
+            error_y=dict(type="data", symmetric=False,
+                         array=[v["bal_acc_p95"] - v["bal_acc_mean"] for v in vals],
+                         arrayminus=[v["bal_acc_mean"] - v["bal_acc_p5"] for v in vals],
+                         color=TEXT_2, thickness=1, width=4),
+            text=[f"{v['bal_acc_mean']:.2f}" for v in vals], textposition="inside",
+            insidetextanchor="start",
+            textfont=dict(color="#0b0b0c" if color != NEUTRAL else TEXT, size=11),
+            hovertemplate=f"{mlabel}: %{{y:.2f}}<extra></extra>"))
+    fig.add_hline(y=0.5, line=dict(color=TEXT_2, dash="dot", width=1),
+                  annotation_text="chance (0.50)", annotation_position="top right",
+                  annotation_font=dict(size=11, color=TEXT_2))
+    fig.update_yaxes(range=[0, 1.1], title_text="Balanced accuracy", tickvals=[0, 0.25, 0.5, 0.75, 1])
+    fig.update_layout(barmode="group", bargap=0.3, bargroupgap=0.08)
+    style(fig, 340)
+    fig.update_layout(showlegend=True, legend=dict(orientation="h", y=1.12, x=0,
+                                                   font=dict(color=TEXT_2)))
+    return fig
+
+
+def tab_evaluation(model_name: str):
+    """How well does it work? Earlier results + the covariate analysis, plainly worded."""
+    model_label = {"logreg": "logistic regression", "rf": "random forest"}[model_name]
+    st.markdown("#### What predicts the label?")
+    st.caption(f"Speaker-grouped cross-validation on all 81 speakers, {model_label}. "
+               "From results/step2_cv_results.csv.")
+    cv_path = Path("results/step2_cv_results.csv")
+    if not cv_path.is_file():
+        st.caption("Results not found. Run step2_train_evaluate.py to generate them.")
+    else:
+        cv = pd.read_csv(cv_path)
+        r = cv[(cv.subset == "All participants") & (cv.model == model_name)].set_index("features")
+        train = load_training_features()
+        chance = max(train.label.mean(), 1 - train.label.mean())
+        show(fig_eval_main(r, chance), key="chart_eval_main")
+        st.markdown(f"<p class='rp-explain'>{_eval_sentences_main(r, chance)}</p>",
+                    unsafe_allow_html=True)
+
+    st.markdown("#### Does the voice add anything beyond age?")
+    st.caption("Model A uses age and sex, B the 18 voice features, C both. Balanced accuracy "
+               "(the average of sensitivity and specificity) is shown because the age-matched "
+               "group is unbalanced; 0.50 is chance in both. From results/step4_covariates.json.")
+    cov_path = Path("results/step4_covariates.json")
+    if not cov_path.is_file():
+        st.caption("Results not found. Run step4_covariates.py to generate them.")
+    else:
+        cov = json.loads(cov_path.read_text())
+        show(fig_eval_covariates(cov, model_name), key="chart_eval_covariates")
+        st.markdown(f"<p class='rp-explain'>{_eval_sentences_covariates(cov, model_name)}</p>",
+                    unsafe_allow_html=True)
+
+    st.markdown("#### How this works and what it can't tell you")
+    st.markdown(
+        "<p class='rp-explain'>Your audio is converted to WAV with ffmpeg, reduced to 8 kHz "
+        "telephone quality to match the training data, and measured with Praat: pitch, pitch "
+        "steadiness, jitter, shimmer, harmonics-to-noise ratio and 13 MFCCs. A classifier "
+        "trained on the 81 recordings turns those 18 numbers into a 0-1 score. No speaker was "
+        "ever tested by a model that had heard them.</p>"
+        "<p class='rp-explain'>The dataset is small, the Parkinson's group is about 20 years "
+        "older, everyone used their own phone, there is one vocal task, and there has been no "
+        "clinical validation. Background noise and compression move the score more than the "
+        "voice does.</p>", unsafe_allow_html=True)
+
+
+def advanced_settings():
+    """Collapsed at the bottom of the page: the model choice."""
+    with st.expander("Advanced", expanded=False):
+        st.radio("Classifier", ["logreg", "rf"], key="model", horizontal=True,
+                 format_func={"logreg": "Logistic regression (default)",
+                              "rf": "Random forest"}.get)
+
+
+TAB_NAMES = ["Record", "Your voice vs. dataset", "Noise test", "Evaluation"]
+
+
+def delete_my_audio():
+    """Button callback: forget this visitor's audio everywhere the app keeps it.
+
+    1. Remove this input's entries from the in-memory caches: the converted WAV
+       (prepare_audio) and every analysis of it (analyse) for every degradation
+       level and both models. Other visitors' entries are untouched.
+    2. Give the recorder and uploader new keys, so Streamlit discards the old
+       widgets and the browser's copy of the recording.
+    3. Reset the sample toggle and degradation sliders, and show a confirmation.
+    """
+    active = st.session_state.pop("_active_input", None)
+    if active is not None:
+        raw, name, wav = active
+        prepare_audio.clear(raw, name)
+        if wav is not None:
+            for model in ("logreg", "rf"):
+                for kind, cfg in DEGRADATIONS.items():
+                    for level in cfg["levels"]:
+                        analyse.clear(wav, kind, level, model)
+    for k in [k for k in st.session_state if k.startswith("deg_")]:
+        del st.session_state[k]
+    st.session_state.use_example = False          # also overrides ?example=1
+    st.query_params.clear()
+    st.session_state.input_version = st.session_state.get("input_version", 0) + 1
+    st.session_state._deleted_flash = True
+
+
+def main():
+    st.set_page_config(page_title="Voice research prototype", layout="wide")
+    header()
+    # The model selector lives in "Advanced" at the bottom of the page; its value
+    # from the previous run (session state) is used everywhere above it.
+    model_name = st.session_state.get("model", "logreg")
+
+    # ?tab=1..4 in the URL opens that tab first.
+    first = st.query_params.get("tab", "1")
+    default = TAB_NAMES[int(first) - 1] if first in ("1", "2", "3", "4") else TAB_NAMES[0]
+    # Shown above the tabs so it's visible whichever tab the visitor was on.
+    if st.session_state.pop("_deleted_flash", False):
+        st.success("Your audio and its analysis were deleted from this app's memory.")
+    t1, t2, t3, t4 = st.tabs(TAB_NAMES, key="main_tabs", default=default)
+
+    # ---- Record: input, checks, signal plots --------------------------------
+    wav, base, problem = None, None, None
+    with t1:
+        source = tab_record()
+        if source is not None:
+            raw, name = source
+            # Remember exactly what was cached so "Delete my audio" can remove it.
+            st.session_state._active_input = (raw, name, None)
+            try:
+                with st.spinner("Converting and measuring..."):
+                    wav, notes = prepare_audio(raw, name)
+                    st.session_state._active_input = (raw, name, wav)
+                    base = analyse(wav, "Background noise", "None", model_name)
+                    warnings = check_voicing(base["feats"], base["level_drop_db"])
+            except AudioProblem as p:
+                problem, wav, base = p, None, None
+                show_problem(p)
+            except Exception as e:                       # last-resort safety net
+                problem, wav, base = AudioProblem("Something went wrong analysing this audio.",
+                                                  f"Please try another recording. ({type(e).__name__})"), None, None
+                show_problem(problem)
+
+        if base is not None:
+            f = base["feats"]
+            chips = [("ok", f"{f['voiced_duration_s']:.1f} s of voice"),
+                     ("ok", f"Pitch {f['f0_mean_hz']:.0f} Hz"),
+                     ("ok", f"Analysed at {TARGET_SR // 1000} kHz")]
+            chips += [("warn", w.split(".")[0]) for w in warnings + notes]
+            st.markdown("<div class='rp-chips'>" + "".join(
+                f"<span class='rp-chip {k}'>{t}</span>" for k, t in chips) + "</div>",
+                unsafe_allow_html=True)
+            for w in warnings + notes:
+                st.warning(w)
+            st.caption("What the model hears (mono, 8 kHz telephone quality, volume-normalised)")
+            st.audio(base["wav"], format="audio/wav")
+            show(fig_signal(base["traces"]), key="chart_signal")
+            st.caption("Next: open Your voice vs. dataset to see the score range and how each "
+                       "measurement compares.")
+
+    # ---- Your voice vs. dataset, Noise test --------------------------------
+    with t2:
+        if base is None:
+            # (plain if/else: a bare one-line conditional would be echoed to the
+            #  page as "None" by Streamlit's magic)
+            if problem:
+                show_problem(problem)
+            else:
+                empty_state("how it compares with the dataset")
+        else:
+            tab_dataset(base, model_name)
+    with t3:
+        if base is None or base["score"] is None:
+            if problem:
+                show_problem(problem)
+            else:
+                empty_state("how recording quality moves the score")
+        else:
+            tab_noise(wav, base, model_name)
+
+    # ---- Evaluation (needs no audio) ----------------------------------------
+    with t4:
+        tab_evaluation(model_name)
+
+    advanced_settings()
+
+
+
+
+
+
+
 
 
 def tab_dataset(base: dict, model_name: str):
@@ -700,7 +995,7 @@ def tab_dataset(base: dict, model_name: str):
                    "them. The heavy overlap is why no single score can be trusted.")
 
     st.markdown("#### Your voice measurements vs. the dataset")
-    st.caption("Violins and dots: the 41 healthy and 40 Parkinson's speakers. Aqua diamond: "
+    st.caption("Violins and dots: the 41 healthy and 40 Parkinson's speakers. Green diamond: "
                "this recording. Hover for exact values.")
     show(fig_voice_features(base["feats"], train), key="chart_voice_features")
     with st.expander("Timbre: 13 MFCC means (spectral shape)"):
@@ -800,158 +1095,15 @@ def tab_noise(wav: bytes, base: dict, model_name: str):
                "pushed almost everyone towards the healthy side.")
 
 
-def how_it_works(model_name: str):
-    cv = load_models()["cv_results"]
-    r = cv[(cv.subset == "All participants") & (cv.model == model_name)].set_index("features")
-    voice = r.loc["Voice (18 features)"]
-    st.markdown("---")
-    st.markdown("### How this works and what it can't tell you")
-    stats = st.columns(4)
-    for col, (num, label) in zip(stats, [
-        ("81", "telephone recordings (41 healthy, 40 Parkinson's)"),
-        (f"{voice.acc_mean:.0%}", f"voice-model accuracy on unseen speakers (± {voice.acc_sd:.0%} across folds)"),
-        ("51%", "accuracy from guessing"),
-        (f"p ≈ {PERM_P_VOICE}", "voice model vs chance: not significant"),
-    ]):
-        col.markdown(f"<div class='rp-card'><div class='rp-stat'>{num}</div>"
-                     f"<div class='rp-stat-label'>{label}</div></div>", unsafe_allow_html=True)
-    st.write("")
-    left, right = st.columns(2, gap="large")
-    with left:
-        st.markdown(
-            "**How it works.** Your audio is converted to WAV with ffmpeg, reduced to 8 kHz "
-            "telephone quality to match the training data, and measured with Praat: pitch, "
-            "pitch steadiness, jitter, shimmer, harmonics-to-noise ratio and 13 MFCCs. A "
-            "logistic regression (or random forest) trained on the 81 recordings turns those "
-            "18 numbers into a 0-1 score. Accuracy was measured with speaker-grouped "
-            "cross-validation: no one was ever tested on a model that had heard them.")
-    with right:
-        st.markdown(
-            f"**What we found, and what it can't tell you.**\n"
-            f"- A model using only *recording* properties (length, loudness, noise floor) "
-            f"scored {r.loc['Recording only (sanity check)'].acc_mean:.0%}, better than the voice "
-            f"(p = {PERM_P_RECORDING}).\n"
-            f"- **Age alone** scored {r.loc['Age only'].acc_mean:.0%}: the Parkinson's group "
-            f"is about 20 years older.\n"
-            f"- Noise and compression move the score more than the voice does.\n"
-            f"- One vowel, one small dataset, phones of unknown type, no clinical validation.")
-    st.caption(f"{PROTOTYPE}. Not a medical device. Full methods and citations are in README.md.")
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-TAB_NAMES = ["🎙️  Record / Upload", "📊  Your Voice vs. the Dataset",
-             "🔊  How Noise Changes the Result"]
 
 
-def delete_my_audio():
-    """Button callback: forget this visitor's audio everywhere the app keeps it.
-
-    1. Remove this input's entries from the in-memory caches: the converted WAV
-       (prepare_audio) and every analysis of it (analyse) for every degradation
-       level and both models. Other visitors' entries are untouched.
-    2. Give the recorder and uploader new keys, so Streamlit discards the old
-       widgets and the browser's copy of the recording.
-    3. Reset the example toggle and degradation sliders, and show a confirmation.
-    """
-    active = st.session_state.pop("_active_input", None)
-    if active is not None:
-        raw, name, wav = active
-        prepare_audio.clear(raw, name)
-        if wav is not None:
-            for model in ("logreg", "rf"):
-                for kind, cfg in DEGRADATIONS.items():
-                    for level in cfg["levels"]:
-                        analyse.clear(wav, kind, level, model)
-    for k in [k for k in st.session_state if k.startswith("deg_")]:
-        del st.session_state[k]
-    st.session_state.use_example = False          # also overrides ?example=1
-    st.query_params.clear()
-    st.session_state.input_version = st.session_state.get("input_version", 0) + 1
-    st.session_state._deleted_flash = True
 
 
-def main():
-    st.set_page_config(page_title="Voice research prototype", page_icon="🔬", layout="wide")
-    header()
-
-    _, right = st.columns([5, 1])
-    with right.popover("⚙︎ Model", width="stretch"):
-        model_name = st.radio("Classifier", ["logreg", "rf"], key="model",
-                              format_func={"logreg": "Logistic regression (default)",
-                                           "rf": "Random forest"}.get)
-
-    tab_names = TAB_NAMES
-    # ?tab=2 or ?tab=3 in the URL opens that tab first.
-    first = st.query_params.get("tab", "1")
-    default = tab_names[int(first) - 1] if first in ("1", "2", "3") else tab_names[0]
-    # Shown above the tabs so it's visible whichever tab the visitor was on.
-    if st.session_state.pop("_deleted_flash", False):
-        st.success("Your audio and its analysis were deleted from this app's memory. "
-                   "Record or upload a new one in **Record / Upload**.", icon="🗑️")
-    t1, t2, t3 = st.tabs(tab_names, key="main_tabs", default=default)
-
-    # ---- Tab 1: input, checks, signal plots ---------------------------------
-    wav, base, problem = None, None, None
-    with t1:
-        source = tab_record()
-        if source is not None:
-            raw, name = source
-            # Remember exactly what was cached so "Delete my audio" can remove it.
-            st.session_state._active_input = (raw, name, None)
-            try:
-                with st.spinner("Converting and measuring…"):
-                    wav, notes = prepare_audio(raw, name)
-                    st.session_state._active_input = (raw, name, wav)
-                    base = analyse(wav, "Background noise", "None", model_name)
-                    warnings = check_voicing(base["feats"], base["level_drop_db"])
-            except AudioProblem as p:
-                problem, wav, base = p, None, None
-                show_problem(p)
-            except Exception as e:                       # last-resort safety net
-                problem, wav, base = AudioProblem("Something went wrong analysing this audio.",
-                                                  f"Please try another recording. ({type(e).__name__})"), None, None
-                show_problem(problem)
-
-        if base is not None:
-            f = base["feats"]
-            chips = [("ok", f"✓ {f['voiced_duration_s']:.1f} s of voice"),
-                     ("ok", f"✓ pitch ≈ {f['f0_mean_hz']:.0f} Hz"),
-                     ("ok", f"✓ analysed at {TARGET_SR // 1000} kHz")]
-            chips += [("warn", "! " + w.split(".")[0]) for w in warnings + notes]
-            st.markdown("<div class='rp-chips'>" + "".join(
-                f"<span class='rp-chip {k}'>{t}</span>" for k, t in chips) + "</div>",
-                unsafe_allow_html=True)
-            for w in warnings + notes:
-                st.warning(w, icon="⚠️")
-            st.caption("What the model hears (mono, 8 kHz telephone quality, volume-normalised):")
-            st.audio(base["wav"], format="audio/wav")
-            show(fig_signal(base["traces"]), key="chart_signal")
-            st.info("Next: open **Your Voice vs. the Dataset** to see the score range and how "
-                    "each measurement compares.", icon="👉")
-
-    # ---- Tabs 2 and 3 -------------------------------------------------------
-    with t2:
-        if base is None:
-            # (plain if/else: a bare one-line conditional would be echoed to the
-            #  page as "None" by Streamlit's magic)
-            if problem:
-                show_problem(problem)
-            else:
-                empty_state("how it compares with the dataset")
-        else:
-            tab_dataset(base, model_name)
-    with t3:
-        if base is None or base["score"] is None:
-            if problem:
-                show_problem(problem)
-            else:
-                empty_state("how recording quality moves the score")
-        else:
-            tab_noise(wav, base, model_name)
-
-    how_it_works(model_name)
 
 
 if __name__ == "__main__":

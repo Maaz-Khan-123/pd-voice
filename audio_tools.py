@@ -8,6 +8,7 @@ functions, so the app shows the same kind of damage the test measured.
 Every degradation takes a parselmouth.Sound and returns a new parselmouth.Sound.
 """
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -15,6 +16,33 @@ from pathlib import Path
 import numpy as np
 import parselmouth
 import soundfile as sf
+
+
+# ---------------------------------------------------------------------------
+# Scratch space for ffmpeg: RAM, not disk, when the system offers it
+# ---------------------------------------------------------------------------
+def memory_tempdir() -> tempfile.TemporaryDirectory:
+    """A temporary folder for ffmpeg's input/output files, in RAM where possible.
+
+    ffmpeg works on files, so audio has to be written somewhere briefly. On Linux
+    (e.g. Streamlit Community Cloud) /dev/shm is a RAM-backed filesystem, so the
+    audio never touches disk there. Elsewhere (macOS has no /dev/shm) we fall back
+    to the normal temp folder; either way the folder is deleted as soon as the
+    `with` block ends.
+    """
+    shm = "/dev/shm"
+    if os.path.isdir(shm) and os.access(shm, os.W_OK):
+        try:
+            return tempfile.TemporaryDirectory(dir=shm, prefix="pdvoice-")
+        except OSError:
+            pass
+    return tempfile.TemporaryDirectory(prefix="pdvoice-")
+
+
+def temp_storage_is_ram() -> bool:
+    """True when memory_tempdir() uses RAM (/dev/shm)."""
+    with memory_tempdir() as d:
+        return d.startswith("/dev/shm")
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +107,7 @@ def mp3_compress(snd: parselmouth.Sound, kbps: int) -> parselmouth.Sound:
 
     At an 8 kHz sample rate LAME allows 8-64 kbps; lower = more compression damage.
     """
-    with tempfile.TemporaryDirectory() as tmp:
+    with memory_tempdir() as tmp:
         wav_in, mp3, wav_out = (Path(tmp) / n for n in ("in.wav", "x.mp3", "out.wav"))
         _sound_to_wav(snd, wav_in)
         run_ffmpeg(["-i", str(wav_in), "-c:a", "libmp3lame", "-b:a", f"{kbps}k", str(mp3)])
