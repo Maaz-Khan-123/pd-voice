@@ -3,9 +3,10 @@
 __pycache__/
 *.pyc
 
-# Raw dataset: download it from figshare (see README). Only the one example
-# recording in examples/ is published with the app.
+# Raw dataset: never committed. Download it from figshare into data/ (see README).
 data/
+*.xlsx
+*.zip
 
 # OS / editor
 .DS_Store

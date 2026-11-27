@@ -222,30 +222,35 @@ design is deliberately restrained: no emoji or icons, one green accent, neutral 
   bottom of the window.
 * **Record:** the three steps on one compact line, then the recorder and the file upload
   (any format ffmpeg reads) above the fold. "Use a sample recording" loads
-  `assets/sample.wav` (disabled with a short note if the file is missing). Then the
+  `assets/sample.wav` if present; no dataset recording is shipped, so it is disabled
+  with a short note unless you add your own recording there. Then the
   interactive waveform, pitch trace and spectrogram of the 8 kHz audio the model analyses.
 * **Your voice vs. dataset:** a **score range** (5th-95th percentile over 100 bootstrap
   models) on the same axis as all 81 dataset speakers scored *held out*, with a
-  plain-language explanation that never gives a verdict, and each voice feature against
-  the healthy and Parkinson's distributions.
+  plain-language explanation that never gives a verdict, a note that in this dataset the
+  score mostly reflects age and recording quality, and each voice feature against the
+  healthy and Parkinson's distributions.
 * **Noise test:** choose noise / MP3 / low bandwidth and a severity; audio, waveform,
   spectrogram and score update side by side with the original.
 * **Evaluation:** a bar chart of accuracy for voice features, recording properties, age
   alone and chance (step 2), and a chart of Models A/B/C on all speakers and the
   age-matched subset (step 4). The two sentences under each chart are generated from the
   numbers, so they always describe what the results show.
-* **Advanced** (collapsed, bottom of page): logistic regression or random forest.
+* **Advanced** (collapsed, bottom of page): logistic regression or random forest, plus a
+  diagnostic line showing whether temporary audio files go to RAM or disk on this host.
 * **Errors are handled with plain messages:** empty files, unsupported types, unreadable
   files, silence, clips under 0.5 s, recordings with under 1 s of steady voice, and noise
   without a pitch. Recordings over 30 s are trimmed; clipping and short voicing get warnings.
 * **Delete my audio:** once audio is loaded, a button directly under the recorder removes the
   visitor's recording and every cached analysis of it from the app's memory, resets the
   recorder/uploader, and shows a confirmation. Other visitors' data is untouched.
-* **Privacy:** "Audio is analysed in memory and not saved." ffmpeg needs files, so the
-  app converts audio in a temporary folder that is deleted immediately; on Linux (e.g.
-  Streamlit Cloud) that folder is in RAM (`/dev/shm`). On macOS, which has no RAM folder,
-  the temporary files briefly touch disk before being deleted.
-* URL options for demos: `?example=1` pre-loads the sample, `?tab=2`, `3` or `4` opens a tab.
+* **Privacy:** "Audio is used only for this analysis and is not stored permanently."
+  Audio is held in memory (cached for at most an hour, removable with "Delete my audio").
+  ffmpeg needs files, so conversion uses a temporary folder that is deleted immediately:
+  in RAM (`/dev/shm`) where the host provides it, otherwise the system temp folder on disk
+  (e.g. on macOS). The Advanced section shows which applies.
+* URL options for demos: `?example=1` pre-loads the sample (if one is present),
+  `?tab=2`, `3` or `4` opens a tab.
 * The app has no age, sex or medical inputs.
 
 ## 4. Limitations
@@ -298,18 +303,20 @@ The repository is ready to deploy as-is:
 * `.streamlit/config.toml`: theme.
 * `models/voice_models.joblib` and `results/features.csv`: the trained models and the
   training features the app compares against (numbers only, no audio).
-* `assets/sample.wav`: the single recording used by "Use a sample recording"
-  (a copy of figshare file `AH_121A_…`).
-
-The raw figshare recordings (`data/`) are **not** in the repository. Download them
-from figshare into `data/figshare/` to re-run steps 1-3.
+* No audio from the dataset. The raw figshare recordings and `Demographics_age_sex.xlsx`
+  live in `data/`, which is git-ignored (as are `*.xlsx` and `*.zip`). Download them from
+  figshare into `data/figshare/` to re-run steps 1-4. An earlier version of the repo
+  included one dataset recording as the app's sample; it has been removed from the
+  repository history.
+* `results/features.csv` holds the per-recording features used for the comparisons,
+  including each sample ID's age and sex label from the dataset spreadsheet.
 
 Deploy: share.streamlit.io → *Create app* → pick this repo, branch `main`, main file
 `app.py` → *Advanced settings* → Python **3.13** → *Deploy*.
 
-Visitors' audio is processed in memory only (cached for at most an hour and removable
-with "Delete my audio"). ffmpeg's temporary files go in RAM (`/dev/shm`) on Linux hosts
-and are deleted immediately.
+Visitors' audio is held in memory (cached for at most an hour and removable with
+"Delete my audio"). ffmpeg's temporary files are deleted immediately and go in RAM
+(`/dev/shm`) where the host provides it; check the Advanced section on the live app.
 
 ## Citations
 

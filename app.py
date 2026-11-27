@@ -35,7 +35,7 @@ from plotly.subplots import make_subplots
 from features import (extract_features, analysis_traces, load_sound, FEATURE_COLUMNS,
                       VOICE_FEATURES, MFCC_FEATURES, TARGET_SR)
 from audio_tools import (convert_to_wav, add_noise, mp3_compress, resample_4k, level_drop_db,
-                         memory_tempdir)
+                         memory_tempdir, temp_storage_is_ram)
 from common import make_model, grouped_folds
 
 # ---------------------------------------------------------------------------
@@ -62,8 +62,8 @@ WARN_VOICED_S = 2.0       # below this we score but warn
 MAX_ANALYSE_S = 30.0      # longer recordings are cut to the first 30 s
 SILENCE_PEAK = 0.003      # peak amplitude below ~-50 dBFS = silence
 LEVEL_DROP_WARN_DB = 15   # volume collapse after the first 0.5 s (see level_drop_db)
-# Sample for demos without a microphone (a healthy-control training recording;
-# copy of figshare file AH_121A_BD5BA248-E807-4CB9-8B53-47E7FFE5F8E2.wav).
+# Optional sample for demos without a microphone. No dataset recording is shipped
+# (dataset audio stays out of the repo); add your own recording here to enable it.
 SAMPLE_FILE = "assets/sample.wav"
 
 FEATURE_LABELS = {
@@ -641,7 +641,9 @@ def tab_record():
     v = st.session_state.get("input_version", 0)     # bumped by "Delete my audio"
     recorded = c1.audio_input("Record", key=f"rec_{v}")
     delete_slot = c1.empty()          # "Delete my audio" appears here once audio is loaded
-    c1.caption("Audio is analysed in memory and not saved.")
+    # Softer wording until /dev/shm (RAM-only temp files) is confirmed on the host;
+    # see the "Temporary audio files" line under Advanced.
+    c1.caption("Audio is used only for this analysis and is not stored permanently.")
     uploaded = c2.file_uploader("Or upload a file", key=f"up_{v}",
                                 help="WAV, MP3, M4A, OGG, WEBM, FLAC, AAC or OPUS, up to 25 MB")
 
@@ -652,15 +654,15 @@ def tab_record():
                  disabled=(not sample_ok) or bool(uploaded or recorded)):
         st.session_state.use_example = not st.session_state.get("use_example", False)
     if not sample_ok:
-        c2.caption(f"Sample recording unavailable ({SAMPLE_FILE} not found).")
+        c2.caption("No sample recording is included. To enable this button, add your own "
+                   f"recording (not from the dataset) as {SAMPLE_FILE}.")
     # ?example=1 in the URL pre-loads the sample (handy as a demo bookmark).
     if sample_ok and st.query_params.get("example") == "1" and "use_example" not in st.session_state:
         st.session_state.use_example = True
     use_example = (sample_ok and st.session_state.get("use_example", False)
                    and not (uploaded or recorded))
     if use_example:
-        c2.caption("Using the sample: a healthy-control speaker from the training data, so "
-                   "the model has heard this voice and its score is optimistic.")
+        c2.caption("Using the sample recording.")
 
     if uploaded or recorded or use_example:
         delete_slot.button("Delete my audio", on_click=delete_my_audio,
@@ -849,6 +851,10 @@ def advanced_settings():
         st.radio("Classifier", ["logreg", "rf"], key="model", horizontal=True,
                  format_func={"logreg": "Logistic regression (default)",
                               "rf": "Random forest"}.get)
+        # Diagnostic: where ffmpeg's short-lived temporary audio files go on this host.
+        st.caption("Temporary audio files: " + (
+            "RAM only (/dev/shm), deleted immediately." if temp_storage_is_ram() else
+            "system temp folder on disk, deleted immediately."))
 
 
 TAB_NAMES = ["Record", "Your voice vs. dataset", "Noise test", "Evaluation"]
@@ -982,14 +988,19 @@ def tab_dataset(base: dict, model_name: str):
             st.markdown(f"<div class='rp-card'><div class='rp-stat-label'>Score range</div>"
                         f"<div class='rp-range'>{lo:.2f} – {hi:.2f}</div>"
                         f"<div class='rp-muted'>central estimate {point:.2f} · scale 0-1</div>"
-                        f"<div class='rp-muted' style='margin-top:.6rem'><b>{PROTOTYPE}</b>"
-                        f"</div></div>", unsafe_allow_html=True)
+                        f"<p style='margin-top:16px'>In this dataset the score mostly reflects "
+                        f"age and recording quality, not Parkinson's.</p>"
+                        f"<div class='rp-muted' style='margin-top:8px'>{PROTOTYPE}</div>"
+                        f"</div>", unsafe_allow_html=True)
         with c2:
             st.markdown(explain_score(base["score"], oof))
             st.caption("The score measures how much this recording's 18 measurements resemble "
-                       "the Parkinson's group of this small dataset. It is **not** a probability "
-                       "of having Parkinson's. The range is the 5th-95th percentile over 100 "
-                       "models, each trained on a resampled copy of the data.")
+                       "the Parkinson's group of this small dataset. In our tests that "
+                       "resemblance mostly tracks age and recording quality: age alone predicts "
+                       "the label better than the voice, and noise or compression shift the "
+                       "score more than the voice does (see Evaluation and Noise test). It is "
+                       "**not** a probability of having Parkinson's. The range is the 5th-95th "
+                       "percentile over 100 models, each trained on a resampled copy of the data.")
         show(fig_score(base["score"], oof), key="chart_score")
         st.caption("Dots: each of the 81 dataset speakers, scored by a model that never saw "
                    "them. The heavy overlap is why no single score can be trusted.")
