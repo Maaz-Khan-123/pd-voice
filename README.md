@@ -47,7 +47,7 @@ What the data inspection (step 0) found:
   peak-normalised to exactly 1.0**. Leading silence was already trimmed from every file.
 * **Age is strongly confounded** with diagnosis (p ≈ 2 × 10⁻⁸, Mann-Whitney).
 * **Signs that the two groups were collected differently:** the two groups use
-  different Sample ID formats (`AH_064F_<UUID>` vs `AH_5456…-<UUID>`), and ages are
+  different Sample ID formats (`AH_<3 digits><letter>_<UUID>` vs `AH_<9 digits>-<UUID>`), and ages are
   whole numbers for controls but decimals for Parkinson's. Any difference between
   the groups in how they were recorded could be learned instead of the disease.
 
