@@ -221,10 +221,16 @@ design is deliberately restrained: no emoji or icons, one green accent, neutral 
   diagnosis. Trained on 81 telephone recordings." The same line is pinned, muted, to the
   bottom of the window.
 * **Record:** the three steps on one compact line, then the recorder and the file upload
-  (any format ffmpeg reads) above the fold. "Use a sample recording" loads
-  `assets/sample.wav` if present; no dataset recording is shipped, so it is disabled
-  with a short note unless you add your own recording there. Then the
-  interactive waveform, pitch trace and spectrogram of the 8 kHz audio the model analyses.
+  (any format ffmpeg reads) above the fold. Until the visitor records or uploads, the
+  page shows `assets/sample.wav`: one healthy-control recording from the dataset, chosen
+  as the cleanest of the 41 (longest voicing with no octave jumps, steady loudness, least
+  clipping). Its score is its **held-out** score from the grouped cross-validation
+  (median and 5th-95th percentile over the 20 repeats, from models that never saw this
+  speaker), and its dot is ringed in the strip chart. The app finds the speaker's row by
+  matching the measurements exactly, so no participant ID is stored for it. Four summary
+  tiles, the waveform, pitch trace, spectrogram, score range and strip chart follow.
+  "Delete my audio" and "Back to sample" clear the visitor's audio. Without the file, the
+  page shows an empty state with a note.
 * **Your voice vs. dataset:** a **score range** (5th-95th percentile over 100 bootstrap
   models) on the same axis as all 81 dataset speakers scored *held out*, with a
   plain-language explanation that never gives a verdict, a note that in this dataset the
@@ -249,8 +255,7 @@ design is deliberately restrained: no emoji or icons, one green accent, neutral 
   ffmpeg needs files, so conversion uses a temporary folder that is deleted immediately:
   in RAM (`/dev/shm`) where the host provides it, otherwise the system temp folder on disk
   (e.g. on macOS). The Advanced section shows which applies.
-* URL options for demos: `?example=1` pre-loads the sample (if one is present),
-  `?tab=2`, `3` or `4` opens a tab.
+* URL options for demos: `?tab=2`, `3` or `4` opens a tab.
 * The app has no age, sex or medical inputs.
 
 ## 4. Limitations
@@ -303,11 +308,12 @@ The repository is ready to deploy as-is:
 * `.streamlit/config.toml`: theme.
 * `models/voice_models.joblib` and `results/features.csv`: the trained models and the
   training features the app compares against (numbers only, no audio).
-* No audio from the dataset. The raw figshare recordings and `Demographics_age_sex.xlsx`
-  live in `data/`, which is git-ignored (as are `*.xlsx` and `*.zip`). Download them from
-  figshare into `data/figshare/` to re-run steps 1-4. An earlier version of the repo
-  included one dataset recording as the app's sample; it has been removed from the
-  repository history.
+* `assets/sample.wav`: one healthy-control recording from the dataset (samples copied
+  unchanged, no metadata, neutral name), used as the app's sample. It is the only audio
+  file in the repository; `.gitignore` excludes every other `*.wav`.
+* The other 80 recordings and `Demographics_age_sex.xlsx` live in `data/`, which is
+  git-ignored (as are `*.xlsx` and `*.zip`). Download them from figshare into
+  `data/figshare/` to re-run steps 1-4.
 * `results/features.csv` holds the per-recording features used for the comparisons,
   including each sample ID's age and sex label from the dataset spreadsheet.
 
