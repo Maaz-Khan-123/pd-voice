@@ -200,8 +200,13 @@ def sample_training_row(_mtime: float) -> int | None:
     train = load_training_features()
     dist = ((train[FEATURE_COLUMNS] - pd.Series(f)[FEATURE_COLUMNS]).abs()
             / train[FEATURE_COLUMNS].std()).sum(axis=1)
-    row = int(dist.idxmin())
-    return row if dist[row] < 1e-6 else None
+    # Near-identical, and clearly closer than any other speaker. Not an exact-equality
+    # test: Praat/numpy on a different CPU (e.g. the Linux host vs the Mac that made
+    # features.csv) can differ in the last decimal places. Here the true match is ~0
+    # and the next-closest speaker is ~9 apart.
+    order = dist.sort_values()
+    row, best, second = int(order.index[0]), float(order.iloc[0]), float(order.iloc[1])
+    return row if best < 0.1 and second > 10 * max(best, 0.01) else None
 
 
 @st.cache_data
