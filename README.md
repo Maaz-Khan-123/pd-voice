@@ -242,8 +242,14 @@ design is deliberately restrained: no emoji or icons, one green accent, neutral 
   alone and chance (step 2), and a chart of Models A/B/C on all speakers and the
   age-matched subset (step 4). The two sentences under each chart are generated from the
   numbers, so they always describe what the results show.
-* **Advanced** (collapsed, bottom of page): logistic regression or random forest, plus a
-  diagnostic line showing whether temporary audio files go to RAM or disk on this host.
+* **Advanced** (collapsed, bottom of page): logistic regression or random forest, a
+  diagnostic line showing whether temporary audio files go to RAM or disk on this host,
+  and an optional **age-aware demo**. It takes age and sex (not stored or logged) and
+  scores the current recording with Model C from step 4 (age + sex + voice), trained in
+  memory with the same settings and score-range method; the sample's own speaker is left
+  out. It also shows the same recording at ages 30, 50 and 70, which makes plain that
+  age drives the score. It is labelled as a demonstration, not a prediction, and does
+  not change the main score. There are no medical-history inputs.
 * **Errors are handled with plain messages:** empty files, unsupported types, unreadable
   files, silence, clips under 0.5 s, recordings with under 1 s of steady voice, and noise
   without a pitch. Recordings over 30 s are trimmed; clipping and short voicing get warnings.

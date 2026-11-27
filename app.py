@@ -129,6 +129,7 @@ h4 {{ font-size: 16px !important; font-weight: 600 !important; margin: 24px 0 8p
 .rp-stat-label {{ color: {TEXT_2}; font-size: 13px; margin-top: 0; }}
 .rp-range {{ font-size: 32px; font-weight: 650; color: {ACCENT}; line-height: 1.2; }}
 .rp-muted {{ color: {TEXT_2}; font-size: 13px; }}
+.rp-muted a {{ color: {ACCENT}; }}
 .rp-explain {{ color: {TEXT}; font-size: 14px; line-height: 1.6; max-width: 72ch; margin: 8px 0 16px 0; }}
 
 /* Quality-check chips */
@@ -923,8 +924,111 @@ def tab_evaluation(model_name: str):
         "voice does.</p>", unsafe_allow_html=True)
 
 
-def advanced_settings():
-    """Collapsed at the bottom of the page: the model choice."""
+AGE_DEMO_NOTE = ("In this dataset the Parkinson's group is about 20 years older, so this score "
+                 "is mostly driven by the age you enter. It is a demonstration, not a prediction.")
+MODEL_C_COLUMNS = ["age", "sex_male"] + FEATURE_COLUMNS     # Model C from step4_covariates.py
+
+
+@st.cache_resource
+def model_c_ensemble(model_name: str, exclude_row: int | None):
+    """Model C (age + sex + 18 voice features), trained in memory for the age-aware demo.
+
+    Same classifier settings as everywhere else (common.make_model) and the same
+    score-range method as the main score: one model on all rows plus a bootstrap
+    ensemble (100 for logistic regression, 30 for random forest, as in step 2).
+    `exclude_row` leaves one speaker out (the sample's), so the sample is scored by
+    models that never saw it. Nothing is written to disk.
+    """
+    from sklearn.utils import resample
+    train = load_training_features().copy()
+    train["sex_male"] = (train["sex"] == "M").astype(int)
+    if exclude_row is not None:
+        train = train.drop(index=exclude_row)
+    X, y = train[MODEL_C_COLUMNS].to_numpy(float), train["label"].to_numpy()
+    full = make_model(model_name).fit(X, y)
+    boot = [make_model(model_name).fit(*resample(X, y, stratify=y, random_state=b))
+            for b in range(100 if model_name == "logreg" else 30)]
+    return full, boot
+
+
+def model_c_score(feats: dict, age: float, sex_male: int, model_name: str,
+                  exclude_row: int | None):
+    """(central, 5th pct, 95th pct) for one recording at a given age and sex."""
+    x = np.array([[age, sex_male] + [feats[c] for c in FEATURE_COLUMNS]], dtype=float)
+    if np.isnan(x).any():
+        return None
+    full, boot = model_c_ensemble(model_name, exclude_row)
+    b = np.array([m.predict_proba(x)[0, 1] for m in boot])
+    return float(full.predict_proba(x)[0, 1]), float(np.percentile(b, 5)), float(np.percentile(b, 95))
+
+
+def age_aware_demo(shown: dict | None, model_name: str):
+    """Optional demo: score the current recording with Model C (age + sex + voice).
+
+    Age and sex live only in this page's widgets for the current session; they are
+    not written anywhere, not logged and not sent anywhere else.
+    """
+    st.markdown("<div class='rp-stat-label' style='margin-top:16px'>Age-aware demo</div>",
+                unsafe_allow_html=True)
+    st.caption("Optional. Age and sex are used only for this calculation and are not "
+               "stored or logged.")
+    if shown is None:
+        st.caption("Record or upload a recording (or wait for the sample to load) first.")
+        return
+    c1, c2 = st.columns(2, gap="medium")
+    age = c1.number_input("Age", min_value=18, max_value=100, value=50, step=1, key="demo_age")
+    sex = c2.radio("Sex", ["Female", "Male"], horizontal=True, key="demo_sex",
+                   help="The dataset records sex as female or male only.")
+    sex_male = int(sex == "Male")
+    exclude = shown.get("mark_row")          # the sample's own row, if this is the sample
+    train = load_training_features()
+    lo_age, hi_age = int(train.age.min()), int(round(train.age.max()))
+    if not (lo_age <= age <= hi_age):
+        st.caption(f"{age} is outside the ages in the dataset ({lo_age}-{hi_age}), so this "
+                   "score is an extrapolation.")
+
+    score = model_c_score(shown["feats"], age, sex_male, model_name, exclude)
+    if score is None:
+        st.caption("Some voice features couldn't be measured, so no score can be shown.")
+        return
+    point, lo, hi = score
+    st.markdown(f"<p class='rp-explain' style='margin:8px 0'>{AGE_DEMO_NOTE}</p>",
+                unsafe_allow_html=True)
+    st.markdown(f"<div class='rp-tiles' style='grid-template-columns:1fr'><div class='rp-tile'>"
+                f"<div class='rp-tile-label'>Score range with age {age}, {sex.lower()}</div>"
+                f"<div class='rp-tile-value accent'>{lo:.2f}–{hi:.2f}</div>"
+                f"<div class='rp-tile-sub'>central {point:.2f} · Model C: age, sex and voice"
+                + (" · models never saw this speaker" if exclude is not None else "")
+                + "</div></div></div>", unsafe_allow_html=True)
+
+    # The same recording at three ages: what changes is age alone.
+    tiles = []
+    for a in (30, 50, 70):
+        sp, slo, shi = model_c_score(shown["feats"], a, sex_male, model_name, exclude)
+        tiles.append(f"<div class='rp-tile'><div class='rp-tile-label'>Age {a}</div>"
+                     f"<div class='rp-tile-value'>{slo:.2f}–{shi:.2f}</div>"
+                     f"<div class='rp-tile-sub'>central {sp:.2f}</div></div>")
+    st.markdown("<div class='rp-tile-label' style='margin-top:8px'>Same recording, same sex, "
+                "only the age changed</div><div class='rp-tiles' style='grid-template-columns:"
+                "repeat(3, minmax(0, 1fr))'>" + "".join(tiles) + "</div>", unsafe_allow_html=True)
+
+    # The evaluated finding, read from step 4's results (logistic regression, all speakers).
+    finding = ""
+    cov_path = Path("results/step4_covariates.json")
+    if cov_path.is_file():
+        cov = json.loads(cov_path.read_text())
+        acc = {x["model"]: x["acc_mean"] for x in cov["results"]
+               if x["subset"] == "All speakers" and x["classifier"] == "logreg"}
+        finding = (f" In cross-validation on all 81 speakers, age and sex alone scored "
+                   f"{acc['A: age + sex']:.0%} and age plus voice scored "
+                   f"{acc['C: age + sex + voice']:.0%}: adding the voice did not help.")
+    st.markdown(f"<p class='rp-muted' style='margin:0'>See the <a href='?tab=4' target='_blank' "
+                f"rel='noopener'>Evaluation tab</a> (opens in a new tab).{finding}</p>",
+                unsafe_allow_html=True)
+
+
+def advanced_settings(shown: dict | None = None, model_name: str = "logreg"):
+    """Collapsed at the bottom of the page: model choice, diagnostics, age-aware demo."""
     with st.expander("Advanced", expanded=False):
         st.radio("Classifier", ["logreg", "rf"], key="model", horizontal=True,
                  format_func={"logreg": "Logistic regression (default)",
@@ -933,6 +1037,7 @@ def advanced_settings():
         st.caption("Temporary audio files: " + (
             "RAM only (/dev/shm), deleted immediately." if temp_storage_is_ram() else
             "system temp folder on disk, deleted immediately."))
+        age_aware_demo(shown, model_name)
 
 
 TAB_NAMES = ["Record", "Your voice vs. dataset", "Noise test", "Evaluation"]
@@ -1106,7 +1211,7 @@ def main():
     with t4:
         tab_evaluation(model_name)
 
-    advanced_settings()
+    advanced_settings(shown, model_name)
 
 
 
